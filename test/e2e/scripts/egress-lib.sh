@@ -77,10 +77,10 @@ capture_start() {
     capture_command=(docker exec "$cluster-control-plane" nsenter -t "$pid" -n /networking-probe)
   fi
   "${capture_command[@]}" capture --port "$capture_port" --stop-file "$capture_stop" > "$artifacts/packets.jsonl" 2> "$artifacts/capture-error.txt" & capture_pid=$!
-  for attempt in {1..20}; do
+  for attempt in {1..200}; do
     if [[ -s "$artifacts/packets.jsonl" ]] && jq -se 'any(.[];.event=="capture-ready")' "$artifacts/packets.jsonl" >/dev/null; then return; fi
     kill -0 "$capture_pid" || { wait "$capture_pid"; return 1; }
-    sleep 1
+    sleep 0.1
   done
   echo 'receiver capture did not become ready' >&2; return 1
 }
@@ -101,7 +101,7 @@ if [[ "$phase" == repair || "$phase" == identity-down ]]; then
   k -n networking-egress exec "$fault_pod" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$test_id-recovered" --timeout 5s > "$artifacts/recovered.jsonl"
   if ! jq -se --arg id "$test_id-recovered" 'any(.[];.id==$id and .success==true)' "$artifacts/recovered.jsonl" >/dev/null; then recovery_failed=true; exit 1; fi
 elif [[ "$phase" != healthy && "$phase" != untrusted ]]; then
-  k -n networking-egress exec "$(epod networking-egress workload)" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$test_id-recovery" --duration 3s --timeout 5s > "$artifacts/recovery.jsonl"
+  k -n networking-egress exec "$(epod networking-egress workload)" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$test_id-recovery" --duration 15s --successes 2 --timeout 5s > "$artifacts/recovery.jsonl"
   if ! jq -se --arg id "$test_id-recovery" 'length>=2 and (.[-2:]|all(.[];.id==$id and .success==true))' "$artifacts/recovery.jsonl" >/dev/null; then recovery_failed=true; exit 1; fi
 fi
   recovery_failed=false

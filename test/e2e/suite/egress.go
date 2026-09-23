@@ -275,8 +275,11 @@ func evaluateEgress(dir, id, contract string) (string, string, error) {
 		}
 		return Inconclusive, "no attributable server/proxy authentication rejection", nil
 	case "gateway":
-		if successes != attempts || !delivered {
+		if successes != attempts {
 			return Violated, "authorized application path did not deliver all correlated requests", nil
+		}
+		if !delivered {
+			return Inconclusive, "successful request is waiting for correlated receiver evidence", nil
 		}
 		if err := gatewayEvidence(dir, id, facts.Protocol, probe); err != nil {
 			return Inconclusive, err.Error(), nil

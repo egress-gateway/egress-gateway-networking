@@ -40,11 +40,11 @@ started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 source_ip=$(k -n "$source_ns" get pod "$source_pod" -o jsonpath='{.status.podIP}')
 fault_verified=true restored=false startup_blocked=false recovery_failed=false
 fault_start='' fault_end=''
-fault_pod='' stopped_pid='' background='' gateway_replicas='' istiod_replicas='' repair_disabled=false redirect_removed=false
-printf '%s\n' "$phase" > "$state_dir/fault-active"
+fault_pod='' stopped_pid='' background='' probe_control='' gateway_replicas='' istiod_replicas='' repair_disabled=false redirect_removed=false
+printf '%s\n' "$test_id" > "$state_dir/fault-active"
 restore() {
   local rc=0
-  if [[ -n "$background" ]]; then wait "$background" || rc=1; background=''; fi
+  if [[ -n "$background" ]]; then stop_probe || rc=1; fi
   k label namespace networking-egress istio-injection=enabled --overwrite >/dev/null || rc=1
   if [[ -n "$stopped_pid" ]]; then docker exec "$cluster-control-plane" kill -CONT "$stopped_pid" || rc=1; stopped_pid=''; fi
   if [[ "$repair_disabled" == true ]]; then repair_setting true || rc=1; repair_disabled=false; fi
@@ -63,6 +63,7 @@ cleanup() {
   [[ "$recovery_failed" != true ]] || safe=false
   capture_finish || { rc=1; safe=false; }
   if [[ "$restored" != true ]]; then restore || { rc=1; safe=false; }; fi
+  if [[ "$rc" == 0 && "$safe" == true && "$defer_cleanup" == true ]]; then exit 0; fi
   if [[ -n "$fault_pod" ]]; then k -n networking-egress delete pod "$fault_pod" --ignore-not-found --wait=true --timeout=60s >/dev/null || { rc=1; safe=false; }; fi
   if [[ "$safe" == true ]]; then rm -f "$state_dir/fault-active" "$state_dir/fault-pod.json" "$state_dir/dr-before.json"; fi
   exit "$rc"
@@ -91,11 +92,29 @@ component_state() {
 }
 if [[ "$phase" != healthy && "$phase" != untrusted ]]; then component_state before; fi
 probe() { k -n "$source_ns" exec "$source_pod" -c probe -- /probe request --protocol "$protocol" --target "$address" --id "$test_id" "${extra[@]}" "$@" > "$artifacts/probe.jsonl"; }
+start_probe() {
+  local fifo="$state_dir/probe-control-$test_id"
+  mkfifo "$fifo"
+  exec {probe_control}<>"$fifo"
+  k -n "$source_ns" exec -i "$source_pod" -c probe -- /probe request --protocol "$protocol" --target "$address" --id "$test_id" "${extra[@]}" --duration 180s --stop-on-stdin < "$fifo" > "$artifacts/probe.jsonl" & background=$!
+}
+stop_probe() {
+  local rc=0
+  printf '%s\n' "$test_id" >&"$probe_control" || rc=1
+  wait "$background" || rc=1
+  background=''
+  exec {probe_control}>&-
+  rm -f "$state_dir/probe-control-$test_id"
+  jq -se --arg id "$test_id" 'any(.[];.event=="probe-stopped" and .id==$id)' "$artifacts/probe.jsonl" >/dev/null || rc=1
+  return "$rc"
+}
 stamp() { jq -nr 'now as $t | ($t|floor|strftime("%Y-%m-%dT%H:%M:%S")) + "." + (1000000 + (($t-($t|floor))*1000000|floor)|tostring|.[1:]) + "Z"'; }
 wait_probe() {
-  for attempt in {1..30}; do
-    if [[ -s "$artifacts/probe.jsonl" ]] && jq -se 'any(.[];.attempted==true)' "$artifacts/probe.jsonl" >/dev/null; then return; fi
-    sleep 1
+  local since=${1:-} count=${2:-1}
+  for attempt in {1..300}; do
+    if [[ -s "$artifacts/probe.jsonl" ]] && jq -se --arg since "$since" --arg id "$test_id" --argjson count "$count" '[.[]|select(.id==$id and .attempted==true and .started>=$since)]|length >= $count' "$artifacts/probe.jsonl" >/dev/null; then return; fi
+    kill -0 "$background" || { wait "$background"; return 1; }
+    sleep 0.1
   done
   echo 'background probe did not start' >&2; return 1
 }
@@ -127,7 +146,7 @@ case "$phase" in
     k -n networking-egress logs "$fault_pod" -c "$container" > "$artifacts/probe.jsonl"
     source_ip=$(jq -r '.status.podIP' <<< "$state");;
   redirect)
-    remove_redirect "$source_pod"; redirect_removed=true
+    redirect_removed=true; remove_redirect "$source_pod"
     probe --duration 3s;;
   sidecar-stop|sidecar-unready)
     stopped_pid=$(envoy_pid "$source_ns" "$source_pod")
@@ -137,16 +156,20 @@ case "$phase" in
     probe --duration 3s;;
   sidecar-kill)
     pod_snapshot "$source_ns" "$source_pod" > "$artifacts/source-before.json"
-    probe --duration 60s & background=$!
+    start_probe
     wait_probe
     fault_start=$(stamp)
     docker exec "$cluster-control-plane" kill -KILL "$(envoy_pid "$source_ns" "$source_pod")"
-    sleep 3
+    for attempt in {1..180}; do
+      pod_snapshot "$source_ns" "$source_pod" > "$artifacts/source-after.json"
+      if jq -se '([.[0].containers[]|select(.name=="istio-proxy")][0]) as $before | ([.[1].containers[]|select(.name=="istio-proxy")][0]) as $after | $after.containerID != null and $after.containerID != $before.containerID and $after.restartCount > $before.restartCount' "$artifacts/source-before.json" "$artifacts/source-after.json" >/dev/null; then break; fi
+      sleep 0.2
+    done
+    jq -se '([.[0].containers[]|select(.name=="istio-proxy")][0]) as $before | ([.[1].containers[]|select(.name=="istio-proxy")][0]) as $after | $after.containerID != null and $after.containerID != $before.containerID and $after.restartCount > $before.restartCount' "$artifacts/source-before.json" "$artifacts/source-after.json" >/dev/null
     k -n "$source_ns" wait pod "$source_pod" --for=condition=Ready --timeout=180s >/dev/null
+    wait_probe "$fault_start" 2
     fault_end=$(stamp)
-    wait "$background"; background=''
-    pod_snapshot "$source_ns" "$source_pod" > "$artifacts/source-after.json"
-    jq -se '.[0].containers != .[1].containers' "$artifacts/source-before.json" "$artifacts/source-after.json" >/dev/null;;
+    stop_probe;;
   gateway-down)
     gateway_replicas=$(k -n networking-gateway get deploy gateway -o jsonpath='{.spec.replicas}')
     k -n networking-gateway scale deployment gateway --replicas=0 >/dev/null
@@ -155,22 +178,24 @@ case "$phase" in
     probe --duration 3s
     fault_end=$(stamp);;
   gateway-restart)
-    probe --duration 60s & background=$!
+    start_probe
     wait_probe
     fault_start=$(stamp)
     k -n networking-gateway delete pod "$gateway_pod" --wait=true >/dev/null
     k -n networking-gateway rollout status deployment/gateway --timeout=180s >/dev/null
     [[ "$(epod networking-gateway gateway)" != "$gateway_pod" ]]
+    wait_probe "$fault_start" 2
     fault_end=$(stamp)
-    wait "$background"; background='';;
+    stop_probe;;
   istiod-down|existing)
     istiod_replicas=$(k -n istio-system get deployment istiod -o jsonpath='{.spec.replicas}')
-    if [[ "$phase" == existing ]]; then probe --duration 90s & background=$!; wait_probe; fi
+    if [[ "$phase" == existing ]]; then start_probe; wait_probe; fi
     k -n istio-system scale deployment istiod --replicas=0 >/dev/null
     k -n istio-system wait pod -l app=istiod --for=delete --timeout=90s >/dev/null
     fault_start=$(stamp)
-    if [[ "$phase" == existing ]]; then wait "$background"; background=''; else probe --duration 3s; fi
-    fault_end=$(stamp);;
+    if [[ "$phase" == existing ]]; then wait_probe "$fault_start" 2; else probe --duration 3s; fi
+    fault_end=$(stamp)
+    if [[ "$phase" == existing ]]; then stop_probe; fi;;
   repair|identity-down)
     fault_pod="gate-$test_id"
     gated_pod "$fault_pod" gate
@@ -179,7 +204,14 @@ case "$phase" in
     if [[ "$phase" == repair ]]; then repair_disabled=true; repair_setting false; remove_redirect "$fault_pod"
     else istiod_replicas=$(k -n istio-system get deployment istiod -o jsonpath='{.spec.replicas}'); k -n istio-system scale deployment istiod --replicas=0 >/dev/null; k -n istio-system wait pod -l app=istiod --for=delete --timeout=90s >/dev/null; fi
     k -n networking-egress exec "$fault_pod" -c test-gate -- /probe release
-    sleep 8
+    deadline=$((SECONDS+90))
+    while ((SECONDS < deadline)); do
+      k -n networking-egress get pod "$fault_pod" -o json | jq '{uid:.metadata.uid,status:.status}' > "$artifacts/startup-blocked.json"
+      if [[ "$phase" == repair ]]; then
+        if jq -e 'any(.status.initContainerStatuses[]?;.name=="istio-validation" and ((.state.terminated.exitCode // .lastState.terminated.exitCode // 0)!=0))' "$artifacts/startup-blocked.json" >/dev/null; then break; fi
+      elif k -n networking-egress logs "$fault_pod" -c istio-proxy > "$artifacts/identity-failure.log" 2>/dev/null && grep -Ei 'ca request failed|failed to sign CSR|failed to generate workload certificate' "$artifacts/identity-failure.log" >/dev/null; then break; fi
+      sleep 0.2
+    done
     k -n networking-egress get pod "$fault_pod" -o json | jq '{uid:.metadata.uid,status:.status}' > "$artifacts/startup-blocked.json"
     if [[ "$phase" == repair ]]; then
       jq -e 'any(.status.initContainerStatuses[]?;.name=="istio-validation" and ((.state.terminated.exitCode // .lastState.terminated.exitCode // 0)!=0)) and ([.status.containerStatuses[]?,.status.initContainerStatuses[]?]|all(.[]; .name!="probe" or .state.running==null))' "$artifacts/startup-blocked.json" >/dev/null
@@ -187,7 +219,7 @@ case "$phase" in
     else
       jq -e '([.status.containerStatuses[]?,.status.initContainerStatuses[]?]|all(.[];.name!="probe" or .state.running==null))' "$artifacts/startup-blocked.json" >/dev/null
       k -n networking-egress logs "$fault_pod" -c istio-proxy > "$artifacts/identity-failure.log"
-      grep -Ei 'certificate|ca request|CSR|connection refused' "$artifacts/identity-failure.log" >/dev/null
+      grep -Ei 'ca request failed|failed to sign CSR|failed to generate workload certificate' "$artifacts/identity-failure.log" >/dev/null
       jq -e '.status.conditions | all(.[];.type!="Ready" or .status!="True")' "$artifacts/startup-blocked.json" >/dev/null
     fi
     startup_blocked=true
@@ -204,13 +236,9 @@ control after
 capture_finish
 snapshot_receiver > "$artifacts/receiver-after.json"
 cmp "$artifacts/receiver-before.json" "$artifacts/receiver-after.json"
-sleep 2
-if [[ -n "$receiver_role" ]]; then docker logs --since "$started" "$cluster-$receiver_role" > "$artifacts/receiver.log" 2>&1
-elif [[ -n "$receiver_pod" ]]; then k -n "$receiver_ns" logs "$receiver_pod" -c "$receiver_container" --since-time "$started" > "$artifacts/receiver.log"
-else : > "$artifacts/receiver.log"; fi
 gateway_pod=$(epod networking-gateway gateway)
-k -n networking-gateway logs "$gateway_pod" -c istio-proxy --since-time "$started" > "$artifacts/gateway.log"
 source_pod=$(epod networking-egress "$client")
 if [[ "$phase" == repair || "$phase" == identity-down ]]; then source_pod="$fault_pod"; fi
-if [[ "$client" != plain ]]; then k -n networking-egress logs "$source_pod" -c istio-proxy --since-time "$started" > "$artifacts/workload.log"; else : > "$artifacts/workload.log"; fi
+jq -n --arg id "$test_id" --arg started "$started" --arg role "$receiver_role" --arg ns "$receiver_ns" --arg pod "$receiver_pod" --arg container "$receiver_container" --arg gateway "$gateway_pod" --arg workload "$source_pod" --arg client "$client" --arg fault "$fault_pod" '{id:$id,started:$started,role:$role,namespace:$ns,pod:$pod,container:$container,gateway:$gateway,workload:$workload,client:$client,fault:$fault}' > "$artifacts/log-context.json"
+"$BASH" "$root/test/e2e/scripts/egress-logs.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id"
 jq -n --arg protocol "$protocol" --arg phase "$phase" --arg target "$target" --arg client "$client" --arg source_ip "$source_ip" --arg fault_start "$fault_start" --arg fault_end "$fault_end" --argjson startup_blocked "$startup_blocked" '{protocol:$protocol,phase:$phase,target:$target,client:$client,fault_start:$fault_start,fault_end:$fault_end,source_ip:$source_ip,startup_blocked:$startup_blocked,fault_verified:true,restored:true,receiver_stable:true}' > "$artifacts/facts.json"

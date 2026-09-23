@@ -23,14 +23,15 @@ const (
 )
 
 type CaseResult struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Requirement string `json:"requirement"`
-	Expected    string `json:"baseline_expected"`
-	Actual      string `json:"security_result"`
-	Acceptance  string `json:"acceptance"`
-	Reason      string `json:"reason,omitempty"`
-	Evidence    string `json:"evidence,omitempty"`
+	ID              string  `json:"id"`
+	Name            string  `json:"name"`
+	Requirement     string  `json:"requirement"`
+	Expected        string  `json:"baseline_expected"`
+	Actual          string  `json:"security_result"`
+	Acceptance      string  `json:"acceptance"`
+	Reason          string  `json:"reason,omitempty"`
+	Evidence        string  `json:"evidence,omitempty"`
+	DurationSeconds float64 `json:"duration_seconds"`
 }
 
 type Report struct {
@@ -153,7 +154,7 @@ func (r *Report) Accepted() bool {
 	return true
 }
 
-func (r *Report) Record(id, actual, reason, evidence string) error {
+func (r *Report) Record(id, actual, reason, evidence string, elapsed time.Duration) error {
 	if actual != Satisfied && actual != Violated && actual != ExecutionError && actual != Inconclusive {
 		return fmt.Errorf("invalid result %q", actual)
 	}
@@ -166,6 +167,7 @@ func (r *Report) Record(id, actual, reason, evidence string) error {
 			return fmt.Errorf("duplicate result for %s", id)
 		}
 		c.Actual, c.Reason, c.Evidence = actual, reason, evidence
+		c.DurationSeconds = elapsed.Seconds()
 		return r.Save()
 	}
 	return fmt.Errorf("unknown case %s", id)
@@ -246,13 +248,13 @@ func (r *Report) Markdown() string {
 	if r.RunError != "" {
 		fmt.Fprintf(&b, "Run failure: %s\n\n", escape(r.RunError))
 	}
-	b.WriteString("Baseline acceptance does not certify fail-closed egress. IPv6, SCTP and other IP protocols are outside this IPv4 TCP/UDP profile.\n\n| Case / scenario | Security requirement | Actual security result | Baseline expected | Acceptance | Evidence / reason |\n| --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("Baseline acceptance does not certify fail-closed egress. IPv6, SCTP and other IP protocols are outside this IPv4 TCP/UDP profile.\n\n| Case / scenario | Security requirement | Actual security result | Baseline expected | Acceptance | Duration | Evidence / reason |\n| --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, c := range r.Cases {
 		mark := "❌ FAIL"
 		if r.CaseAccepted(c) {
 			mark = "✅ PASS"
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s %s | %s | %s | `%s` %s |\n", escape(c.Name), escape(c.Requirement), icon[c.Actual], c.Actual, escape(c.Expected), mark, escape(c.Evidence), escape(c.Reason))
+		fmt.Fprintf(&b, "| %s | %s | %s %s | %s | %s | %.3fs | `%s` %s |\n", escape(c.Name), escape(c.Requirement), icon[c.Actual], c.Actual, escape(c.Expected), mark, c.DurationSeconds, escape(c.Evidence), escape(c.Reason))
 	}
 	return b.String()
 }
@@ -267,6 +269,7 @@ func (r *Report) junit() []byte {
 		Class   string   `xml:"classname,attr"`
 		Failure *failure `xml:"failure,omitempty"`
 		Output  string   `xml:"system-out"`
+		Time    float64  `xml:"time,attr"`
 	}
 	s := struct {
 		XMLName  xml.Name `xml:"testsuite"`
@@ -276,7 +279,7 @@ func (r *Report) junit() []byte {
 		Cases    []item   `xml:"testcase"`
 	}{Name: "networking-" + r.Mode}
 	for _, c := range r.Cases {
-		x := item{Name: c.Name, Class: c.ID, Output: fmt.Sprintf("security=%s baseline=%s evidence=%s reason=%s", c.Actual, c.Expected, c.Evidence, c.Reason)}
+		x := item{Name: c.Name, Class: c.ID, Time: c.DurationSeconds, Output: fmt.Sprintf("security=%s baseline=%s evidence=%s reason=%s", c.Actual, c.Expected, c.Evidence, c.Reason)}
 		if !r.CaseAccepted(c) {
 			x.Failure = &failure{Message: c.Actual, Text: x.Output}
 			s.Failures++

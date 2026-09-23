@@ -6,6 +6,7 @@ root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 source "$root/install/versions.env"
 state_dir='' artifacts='' test_id=''
 protocol='' target='' client='' phase=''
+defer_cleanup=false
 while (($#)); do
   case "$1" in
     --state-dir) state_dir=$2; shift 2 ;;
@@ -15,6 +16,7 @@ while (($#)); do
     --target) target=$2; shift 2 ;;
     --client) client=$2; shift 2 ;;
     --phase) phase=$2; shift 2 ;;
+    --defer-cleanup) defer_cleanup=true; shift ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done

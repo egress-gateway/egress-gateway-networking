@@ -81,6 +81,12 @@ func TestDirectAddressRoutedThroughGatewayIsNotABypass(t *testing.T) {
 	if err != nil || status != Satisfied {
 		t.Fatalf("legal gateway path called a bypass: %s %v", status, err)
 	}
+	write("receiver.log", "")
+	status, _, err = evaluateEgress(dir, "x", "gateway")
+	if err != nil || status != Inconclusive {
+		t.Fatalf("pending receiver logs treated as a terminal verdict: %s %v", status, err)
+	}
+	write("receiver.log", `{"event":"received","id":"x"}`)
 	write("workload.log", `{"test_id":"x","upstream_cluster":"PassthroughCluster"}`)
 	status, _, err = evaluateEgress(dir, "x", "deny")
 	if err != nil || status != Violated {

@@ -234,3 +234,14 @@ Its open cases are N1-01–15, N1-20–28 and N2-01–02: direct external/in-clu
 traffic, UDP/QUIC and wrong-resolver traffic, absent/broken proxy interception,
 fault-window bypasses, and wrong gateway tuples. Authentication rejection and the
 startup validation/identity gates do not turn those open paths into network isolation.
+
+Restart probes stop after verified fault observations and component recovery;
+the existing-connection probe stops after observing the same connection before
+and during the confirmed outage. Both use a 180-second deadline instead of a
+fixed 60/90-second run. Recovery requires two consecutive authenticated requests. Log evidence is
+evaluated immediately; Godog retries incomplete evidence for at most 10 seconds
+and retains temporary fixtures until evaluation finishes. Operation errors and
+conclusive security results are never retried into a different verdict. The
+native Istio readiness thresholds and bounded negative probe windows remain in
+effect. Markdown, JSON and JUnit report elapsed time for each case, including its
+cleanup, so runtime changes can be compared without repeating timing experiments.

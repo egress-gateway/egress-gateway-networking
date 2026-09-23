@@ -110,13 +110,16 @@ func TestSetupFailureRetainsUnexecutedCases(t *testing.T) {
 	if !strings.Contains(string(b), "⏸ not_run") || !strings.Contains(string(b), "kind creation failed") {
 		t.Fatalf("missing failure: %s", b)
 	}
-	if err := r.Record("missing", Satisfied, "", ""); err == nil {
+	if err := r.Record("missing", Satisfied, "", "", time.Second); err == nil {
 		t.Fatal("unknown case accepted")
 	}
-	if err := r.Record("N1-01", Satisfied, "", ""); err != nil {
+	if err := r.Record("N1-01", Satisfied, "", "", time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if err := r.Record("N1-01", Violated, "", ""); err == nil {
+	if r.Cases[0].DurationSeconds != 1 || !strings.Contains(r.Markdown(), "1.000s") || !strings.Contains(string(r.junit()), `time="1"`) {
+		t.Fatal("case duration missing from one of the reports")
+	}
+	if err := r.Record("N1-01", Violated, "", "", time.Second); err == nil {
 		t.Fatal("duplicate result accepted")
 	}
 }

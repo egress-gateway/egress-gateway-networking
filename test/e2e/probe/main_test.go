@@ -7,6 +7,7 @@ import (
 	"flag"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -16,6 +17,63 @@ import (
 
 	"github.com/quic-go/quic-go/http3"
 )
+
+func TestRecoveryStopsOnConsecutiveSuccesses(t *testing.T) {
+	var calls atomic.Int32
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 2 {
+			http.Error(w, "recovering", http.StatusServiceUnavailable)
+			return
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": r.Header.Get("X-Networking-Test-Id")})
+	}))
+	defer s.Close()
+	observations, err := captureRequest(t, "--target", strings.TrimPrefix(s.URL, "http://"), "--id", "recover", "--duration", "10s", "--successes", "2", "--interval", "1ms")
+	if err != nil || len(observations) != 4 || !observations[0].Success || observations[1].Success || !observations[2].Success || !observations[3].Success {
+		t.Fatalf("consecutive recovery: observations=%+v err=%v", observations, err)
+	}
+}
+
+func TestControlledProbeCompletion(t *testing.T) {
+	for _, tc := range []struct {
+		name, signal string
+		success      bool
+	}{{"matching", "control\n", true}, {"mismatched", "other\n", false}, {"EOF", "", false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			input, output, err := os.Pipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer output.Close()
+			defer input.Close()
+			previous := os.Stdin
+			os.Stdin = input
+			defer func() { os.Stdin = previous }()
+			var calls atomic.Int32
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]string{"id": "control"})
+				if calls.Add(1) == 2 {
+					_, _ = output.WriteString(tc.signal)
+					_ = output.Close()
+				}
+			}))
+			defer s.Close()
+			observations, err := captureRequest(t, "--target", strings.TrimPrefix(s.URL, "http://"), "--id", "control", "--duration", "10s", "--stop-on-stdin", "--interval", "1ms")
+			if (err == nil) != tc.success || len(observations) < 2 {
+				t.Fatalf("controlled completion: observations=%+v err=%v", observations, err)
+			}
+		})
+	}
+}
+
+func TestRecoveryDeadlineCannotPass(t *testing.T) {
+	s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "unavailable", 503) }))
+	defer s.Close()
+	observations, err := captureRequest(t, "--target", strings.TrimPrefix(s.URL, "http://"), "--id", "deadline", "--duration", "20ms", "--successes", "2", "--interval", "1ms")
+	if err == nil || !strings.Contains(err.Error(), "deadline") || len(observations) == 0 {
+		t.Fatalf("deadline accepted: observations=%+v err=%v", observations, err)
+	}
+}
 
 func captureRequest(t *testing.T, args ...string) ([]observation, error) {
 	t.Helper()

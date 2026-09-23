@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/cucumber/godog"
 	"github.com/egress-gateway/egress-gateway-networking/test/e2e/environment"
@@ -42,6 +43,8 @@ func (s *Suite) Run(ctx context.Context) error {
 	var client, server access
 	var currentCase, observed, reason string
 	var blocked bool
+	var egressPrepared bool
+	var caseStarted time.Time
 	scenarios := 0
 	var reportErrors []error
 	suite := godog.TestSuite{
@@ -57,6 +60,8 @@ func (s *Suite) Run(ctx context.Context) error {
 					return ctx, errors.New("suite interrupted or previous fault was not restored")
 				}
 				currentCase, observed, reason = caseID(scenario.Name), "", ""
+				egressPrepared = false
+				caseStarted = time.Now()
 				id = strings.ToLower(rand.Text()[:20])
 				dir = filepath.Join(s.Artifacts, currentCase)
 				scenarios++
@@ -67,6 +72,11 @@ func (s *Suite) Run(ctx context.Context) error {
 				if blocked {
 					return ctx, stepErr
 				}
+				if egressPrepared {
+					cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 90*time.Second)
+					stepErr = errors.Join(stepErr, s.Execute(cleanupCtx, "test/e2e/scripts/egress-cleanup.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id))
+					cancel()
+				}
 				if stepErr != nil {
 					observed, reason = ExecutionError, stepErr.Error()
 				}
@@ -76,7 +86,7 @@ func (s *Suite) Run(ctx context.Context) error {
 				if s.Report == nil {
 					return ctx, stepErr
 				}
-				if err := s.Report.Record(currentCase, observed, reason, currentCase+"/"); err != nil {
+				if err := s.Report.Record(currentCase, observed, reason, currentCase+"/", time.Since(caseStarted)); err != nil {
 					reportErrors = append(reportErrors, err)
 					return ctx, err
 				}
@@ -91,11 +101,15 @@ func (s *Suite) Run(ctx context.Context) error {
 				return s.Execute(ctx, "test/e2e/scripts/"+script+".sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
 			}
 			sc.Step(`^the "([^"]+)" probe targets "([^"]+)" from "([^"]+)" during "([^"]+)"$`, func(protocol, target, source, phase string) error {
-				return s.Execute(ctx, "test/e2e/scripts/egress-case.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--protocol", protocol, "--target", target, "--client", source, "--phase", phase)
+				err := s.Execute(ctx, "test/e2e/scripts/egress-case.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--protocol", protocol, "--target", target, "--client", source, "--phase", phase, "--defer-cleanup")
+				egressPrepared = err == nil
+				return err
 			})
 			sc.Step(`^the egress contract "([^"]+)" is evaluated$`, func(contract string) error {
 				var err error
-				observed, reason, err = evaluateEgress(dir, id, contract)
+				observed, reason, err = awaitEvidence(ctx, 10*time.Second, func() (string, string, error) { return evaluateEgress(dir, id, contract) }, func(ctx context.Context) error {
+					return s.Execute(ctx, "test/e2e/scripts/egress-logs.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
+				})
 				return err
 			})
 			sc.Step(`^the shared Istio installation and test workloads are ready$`, func() error { return ctx.Err() })

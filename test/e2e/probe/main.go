@@ -340,6 +340,8 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 	peerURI := f.String("peer-uri", "", "verify this SPIFFE URI instead of a DNS SAN")
 	query := f.String("query", "", "DNS name")
 	duration := f.Duration("duration", 0, "continuous probe window")
+	stopOnInput := f.Bool("stop-on-stdin", false, "stop between requests when stdin supplies the correlation ID; duration is the deadline")
+	requiredSuccesses := f.Int("successes", 0, "stop after this many consecutive successes; duration is the deadline")
 	interval := f.Duration("interval", 200*time.Millisecond, "continuous probe interval")
 	timeout := f.Duration("timeout", 2*time.Second, "per-attempt deadline")
 	persistent := f.Bool("persistent", false, "reuse TCP connection")
@@ -348,6 +350,23 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 	}
 	if *target == "" || *id == "" || *interval <= 0 || *timeout <= 0 {
 		return errors.New("target, id and positive interval/timeout required")
+	}
+	if *requiredSuccesses < 0 || (*stopOnInput || *requiredSuccesses > 0) && *duration <= 0 || *stopOnInput && *requiredSuccesses > 0 {
+		return errors.New("controlled probes require a positive deadline and exactly one completion condition")
+	}
+	var stopInput <-chan error
+	if *stopOnInput {
+		input := os.Stdin
+		defer input.Close()
+		result := make(chan error, 1)
+		stopInput = result
+		go func() {
+			line, err := bufio.NewReader(input).ReadString('\n')
+			if err == nil && strings.TrimSpace(line) != *id {
+				err = errors.New("probe stop identity mismatch")
+			}
+			result <- err
+		}()
 	}
 	if !strings.Contains("|http|https|tcp|udp|quic|dns-udp|dns-tcp|tls|", "|"+*protocol+"|") {
 		return errors.New("unsupported protocol")
@@ -424,7 +443,20 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 		}
 	}()
 	end := time.Now().Add(*duration)
+	consecutiveSuccesses := 0
+	finishInput := func(err error) error {
+		if err != nil {
+			return fmt.Errorf("probe control: %w", err)
+		}
+		event("probe-stopped", *protocol, *id, "", "")
+		return nil
+	}
 	for sequence := 0; ; sequence++ {
+		select {
+		case err := <-stopInput:
+			return finishInput(err)
+		default:
+		}
 		cctx, cancel := context.WithTimeout(ctx, *timeout)
 		o := observation{ID: *id, Sequence: sequence, Protocol: *protocol, Target: *target, Started: time.Now().UTC(), Attempted: true}
 		err := func() error {
@@ -578,14 +610,27 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 			o.Error = err.Error()
 		}
 		emit(o)
+		if o.Success {
+			consecutiveSuccesses++
+		} else {
+			consecutiveSuccesses = 0
+		}
 		if connection != nil && (!*persistent || err != nil) {
 			_ = connection.Close()
 			connection = nil
+		}
+		if *requiredSuccesses > 0 && consecutiveSuccesses >= *requiredSuccesses {
+			return nil
+		}
+		if time.Now().After(end) && (*stopOnInput || *requiredSuccesses > 0) {
+			return errors.New("probe deadline exceeded before completion condition")
 		}
 		if *duration == 0 || time.Now().After(end) {
 			return nil
 		}
 		select {
+		case err := <-stopInput:
+			return finishInput(err)
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-time.After(*interval):

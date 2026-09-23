@@ -12,6 +12,7 @@ import (
 	"os"
 	"time"
 
+	"golang.org/x/net/bpf"
 	"golang.org/x/sys/unix"
 )
 
@@ -35,17 +36,42 @@ func capture(ctx context.Context, f *flag.FlagSet, args []string) error {
 		return err
 	}
 	defer unix.Close(fd)
-	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Sec: 1}); err != nil {
+	compiled, err := bpf.Assemble(captureFilter(uint16(*port)))
+	if err != nil {
+		return err
+	}
+	filter := make([]unix.SockFilter, len(compiled))
+	for i, instruction := range compiled {
+		filter[i] = unix.SockFilter{Code: instruction.Op, Jt: instruction.Jt, Jf: instruction.Jf, K: instruction.K}
+	}
+	if err := unix.SetsockoptSockFprog(fd, unix.SOL_SOCKET, unix.SO_ATTACH_FILTER, &unix.SockFprog{Len: uint16(len(filter)), Filter: &filter[0]}); err != nil {
+		return err
+	}
+	if err := unix.SetsockoptTimeval(fd, unix.SOL_SOCKET, unix.SO_RCVTIMEO, &unix.Timeval{Usec: 100000}); err != nil {
 		return err
 	}
 	emit(map[string]any{"event": "capture-ready", "port": *port})
 	b := make([]byte, 65536)
 	var captured uint32
+	var draining time.Time
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		if _, err := os.Stat(*stop); err == nil {
+		if draining.IsZero() {
+			if _, err := os.Stat(*stop); err == nil {
+				draining = time.Now()
+			}
+		}
+		flags := 0
+		if !draining.IsZero() {
+			if time.Since(draining) > 2*time.Second {
+				return errors.New("receiver capture queue did not drain")
+			}
+			flags = unix.MSG_DONTWAIT
+		}
+		n, _, err := unix.Recvfrom(fd, b, flags)
+		if errors.Is(err, unix.EAGAIN) && !draining.IsZero() {
 			stats, err := unix.GetsockoptTpacketStats(fd, unix.SOL_PACKET, unix.PACKET_STATISTICS)
 			if err != nil {
 				return err
@@ -53,7 +79,6 @@ func capture(ctx context.Context, f *flag.FlagSet, args []string) error {
 			emit(map[string]any{"event": "capture-complete", "dropped": stats.Drops, "kernel_packets": stats.Packets, "captured": captured})
 			return nil
 		}
-		n, _, err := unix.Recvfrom(fd, b, 0)
 		if errors.Is(err, unix.EAGAIN) || errors.Is(err, unix.EINTR) {
 			continue
 		}

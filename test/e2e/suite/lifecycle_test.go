@@ -5,8 +5,55 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestDeferredCleanupFailureStopsLaterCases(t *testing.T) {
+	root, state, artifacts := t.TempDir(), t.TempDir(), t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "test/e2e/features"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	feature := `Feature: deferred cleanup
+  Scenario: N1-01 incomplete evidence
+    When the "udp" probe targets "external" from "workload" during "healthy"
+    Then the egress contract "deny" is evaluated
+  Scenario: N1-02 blocked after cleanup failure
+    When the "udp" probe targets "external" from "workload" during "healthy"
+    Then the egress contract "deny" is evaluated
+`
+	if err := os.WriteFile(filepath.Join(root, "test/e2e/features/cleanup.feature"), []byte(feature), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(state, "environment.json"), []byte(`{"inputs":"test"}`), 0600); err != nil {
+		t.Fatal(err)
+	}
+	report, err := NewReport(root, artifacts, "enforce", "test", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var operations []string
+	s := Suite{Root: root, State: state, Artifacts: artifacts, Report: report, Execute: func(ctx context.Context, script string, args ...string) error {
+		operations = append(operations, filepath.Base(script))
+		if strings.HasSuffix(script, "egress-case.sh") {
+			return os.WriteFile(filepath.Join(state, "fault-active"), []byte("owned case"), 0600)
+		}
+		if strings.HasSuffix(script, "egress-cleanup.sh") {
+			if ctx.Err() != nil {
+				t.Fatal("cleanup was already cancelled")
+			}
+			return errors.New("owned fixture cleanup failed")
+		}
+		t.Fatalf("unexpected operation %s", script)
+		return nil
+	}}
+	if err := s.Run(t.Context()); err == nil {
+		t.Fatal("incomplete suite passed")
+	}
+	if strings.Join(operations, ",") != "egress-case.sh,egress-cleanup.sh" || report.Cases[0].Actual != ExecutionError || !strings.Contains(report.Cases[0].Reason, "cleanup failed") || report.Cases[1].Actual != NotRun {
+		t.Fatalf("unsafe cleanup accounting: operations=%v cases=%+v", operations, report.Cases)
+	}
+}
 
 func TestInterruptedOrUnrestoredSuiteLeavesRemainingCasesNotRun(t *testing.T) {
 	for _, interrupted := range []bool{false, true} {
