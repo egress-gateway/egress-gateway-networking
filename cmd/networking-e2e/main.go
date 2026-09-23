@@ -53,8 +53,8 @@ func run() (result error) {
 			*path = filepath.Join(*root, *path)
 		}
 	}
-	if rel, err := filepath.Rel(*state, *artifacts); err != nil || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))) {
-		return errors.New("artifacts must be outside the private state directory so cleanup preserves evidence")
+	if err := checkOutputPaths(*state, *artifacts); err != nil {
+		return err
 	}
 	if _, err = os.Stat(filepath.Join(*root, "install/versions.env")); err != nil {
 		return fmt.Errorf("invalid repository root: %w", err)
@@ -123,4 +123,13 @@ func run() (result error) {
 	s := suite.Suite{Root: *root, State: *state, Artifacts: runDir, Execute: execute}
 	e := environment.Environment{Root: *root, State: *state, Artifacts: runDir, Cluster: *cluster, Keep: *keep, Execute: execute, Test: s.Run}
 	return e.Run(ctx, os.Args[1])
+}
+
+func checkOutputPaths(state, artifacts string) error {
+	for _, paths := range [][2]string{{state, artifacts}, {artifacts, state}} {
+		if rel, err := filepath.Rel(paths[0], paths[1]); err != nil || filepath.IsLocal(rel) {
+			return errors.New("artifacts and private state directories must not contain each other")
+		}
+	}
+	return nil
 }
