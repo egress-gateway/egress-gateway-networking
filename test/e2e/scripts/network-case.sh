@@ -19,7 +19,7 @@ source_ns=networking-np source_pod=client
 receiver_ns=networking-np receiver_pod=httpbin receiver_container=httpbin
 port=8080 httpbin=(--httpbin)
 control=(k -n networking-np-other exec control -- /probe)
-started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+started=$(node_stamp)
 if [[ "$target" != np-* ]]; then
   source_ns=networking-egress; source_pod=$(epod "$source_ns" plain)
   httpbin=()

@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Sourced after common.sh has verified this invocation's owned kind node.
+node_stamp() {
+  # Probes and Kubernetes timestamps use the Linux node clock; the host runner
+  # can have a different clock when Docker runs inside a VM.
+  docker exec "$cluster-control-plane" date -u "${1:-+%Y-%m-%dT%H:%M:%S.%NZ}"
+}
 epod() {
   k -n "$1" get pods -l "app=$2" -o json | jq -er '.items | map(select(.metadata.deletionTimestamp == null)) | if length == 1 then .[0].metadata.name else error("ambiguous fixture Pod") end'
 }

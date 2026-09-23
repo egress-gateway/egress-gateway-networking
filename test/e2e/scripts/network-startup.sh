@@ -44,7 +44,9 @@ done
 docker exec "$cluster-quic" /probe request --protocol udp --target "$address" --id "$test_id-control-before" --timeout 1s > "$artifacts/control-before.jsonl"
 policy_wait=$(docker exec "$cluster-control-plane" cat /etc/cni/net.d/10-calico.conflist | jq -er '.plugins[]|select(.type=="calico")|.policy_setup_timeout_seconds|select(.>0)')
 felix_pause
-fault_start=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+# Kubernetes creationTimestamp has second precision; compare on the same clock
+# and at that precision so a Pod created later in this second is not pre-fault.
+fault_start=$(node_stamp '+%Y-%m-%dT%H:%M:%SZ')
 docker exec "$cluster-control-plane" iptables-save -c -t filter > "$artifacts/rules-before.txt"
 jq -n --arg name "$source_pod" --arg image "$(cat "$state_dir/probe-image")" --arg id "$test_id" --arg address "$address" --arg phase "$phase" '{apiVersion:"v1",kind:"Pod",metadata:{name:$name,namespace:"networking-np",labels:{"networking.egress/protected":"true"}},spec:{restartPolicy:"Never",automountServiceAccountToken:false,containers:[{name:"keeper",image:$image,imagePullPolicy:"Never",args:["idle"],securityContext:{runAsUser:10000,allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]}}}]}} | {pod:.,probe:{name:"first-probe",image:$image,imagePullPolicy:"Never",args:["request","--protocol","udp","--target",$address,"--id",$id,"--duration","15s","--timeout","300ms"],securityContext:{runAsUser:10000,allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]}}}} | if $phase=="felix-init" then .pod.spec.initContainers=[.probe] else .pod.spec.containers += [.probe] end | .pod' | k create -f - >/dev/null
 deadline=$((SECONDS+45))
@@ -66,7 +68,7 @@ else
     jq '[.items[] | {uid:.involvedObject.uid,reason,message,time:(.lastTimestamp // .eventTime)}]' > "$artifacts/startup-events.json"
 fi
 felix_paused > "$artifacts/felix-during.txt"
-fault_end=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+fault_end=$(node_stamp '+%Y-%m-%dT%H:%M:%SZ')
 docker exec "$cluster-control-plane" iptables-save -c -t filter > "$artifacts/rules-after.txt"
 docker exec "$cluster-quic" /probe request --protocol udp --target "$address" --id "$test_id-control-after" --timeout 1s > "$artifacts/control-after.jsonl"
 finish_observers

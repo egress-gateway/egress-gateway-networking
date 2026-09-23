@@ -37,7 +37,7 @@ if [[ "$client" == plain ]]; then
   jq -e '.containers|all(.[];. != "istio-proxy" and . != "istio-init")' "$artifacts/unmeshed-source.json" >/dev/null
 fi
 if [[ "$phase" == untrusted ]]; then extra+=(--untrusted-client); fi
-started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+started=$(node_stamp)
 source_ip=$(k -n "$source_ns" get pod "$source_pod" -o jsonpath='{.status.podIP}')
 fault_verified=false restored=false receiver_stable=false startup_blocked=false recovery_failed=false
 fault_start='' fault_end=''
@@ -113,7 +113,6 @@ stop_probe() {
   jq -se --arg id "$test_id" 'any(.[];.event=="probe-stopped" and .id==$id)' "$artifacts/probe.jsonl" >/dev/null || rc=1
   return "$rc"
 }
-stamp() { jq -nr 'now as $t | ($t|floor|strftime("%Y-%m-%dT%H:%M:%S")) + "." + (1000000 + (($t-($t|floor))*1000000|floor)|tostring|.[1:]) + "Z"'; }
 wait_probe() {
   local since=${1:-} count=${2:-1}
   for attempt in {1..300}; do
@@ -124,7 +123,7 @@ wait_probe() {
   echo 'background probe did not start' >&2; return 1
 }
 # Bound even recreation/startup phases, which may produce no application request.
-if [[ "$phase" != healthy && "$phase" != untrusted ]]; then fault_start=$(stamp); fi
+if [[ "$phase" != healthy && "$phase" != untrusted ]]; then fault_start=$(node_stamp); fi
 case "$phase" in
   healthy|untrusted) probe;;
   fresh)
@@ -165,7 +164,7 @@ case "$phase" in
     pod_snapshot "$source_ns" "$source_pod" > "$artifacts/source-before.json"
     start_probe
     wait_probe
-    fault_start=$(stamp)
+    fault_start=$(node_stamp)
     docker exec "$cluster-control-plane" kill -KILL "$(envoy_pid "$source_ns" "$source_pod")"
     for attempt in {1..180}; do
       pod_snapshot "$source_ns" "$source_pod" > "$artifacts/source-after.json"
@@ -175,33 +174,33 @@ case "$phase" in
     jq -se '([.[0].containers[]|select(.name=="istio-proxy")][0]) as $before | ([.[1].containers[]|select(.name=="istio-proxy")][0]) as $after | $after.containerID != null and $after.containerID != $before.containerID and $after.restartCount > $before.restartCount' "$artifacts/source-before.json" "$artifacts/source-after.json" >/dev/null
     k -n "$source_ns" wait pod "$source_pod" --for=condition=Ready --timeout=180s >/dev/null
     wait_probe "$fault_start" 2
-    fault_end=$(stamp)
+    fault_end=$(node_stamp)
     stop_probe;;
   gateway-down)
     gateway_replicas=$(k -n networking-gateway get deploy gateway -o jsonpath='{.spec.replicas}')
     k -n networking-gateway scale deployment gateway --replicas=0 >/dev/null
     k -n networking-gateway wait pod "$gateway_pod" --for=delete --timeout=90s >/dev/null
-    fault_start=$(stamp)
+    fault_start=$(node_stamp)
     probe --duration 3s
-    fault_end=$(stamp);;
+    fault_end=$(node_stamp);;
   gateway-restart)
     start_probe
     wait_probe
-    fault_start=$(stamp)
+    fault_start=$(node_stamp)
     k -n networking-gateway delete pod "$gateway_pod" --wait=true >/dev/null
     k -n networking-gateway rollout status deployment/gateway --timeout=180s >/dev/null
     [[ "$(epod networking-gateway gateway)" != "$gateway_pod" ]]
     wait_probe "$fault_start" 2
-    fault_end=$(stamp)
+    fault_end=$(node_stamp)
     stop_probe;;
   istiod-down|existing)
     istiod_replicas=$(k -n istio-system get deployment istiod -o jsonpath='{.spec.replicas}')
     if [[ "$phase" == existing ]]; then start_probe; wait_probe; fi
     k -n istio-system scale deployment istiod --replicas=0 >/dev/null
     k -n istio-system wait pod -l app=istiod --for=delete --timeout=90s >/dev/null
-    fault_start=$(stamp)
+    fault_start=$(node_stamp)
     if [[ "$phase" == existing ]]; then wait_probe "$fault_start" 2; else probe --duration 3s; fi
-    fault_end=$(stamp)
+    fault_end=$(node_stamp)
     if [[ "$phase" == existing ]]; then stop_probe; fi;;
   repair|identity-down)
     fault_pod="gate-$test_id"
@@ -234,7 +233,7 @@ case "$phase" in
   *) echo 'unsupported phase' >&2; exit 2;;
 esac
 fault_verified=true
-if [[ "$phase" != healthy && "$phase" != untrusted && -z "$fault_end" ]]; then fault_end=$(stamp); fi
+if [[ "$phase" != healthy && "$phase" != untrusted && -z "$fault_end" ]]; then fault_end=$(node_stamp); fi
 if [[ "$phase" != healthy && "$phase" != untrusted ]]; then component_state fault; fi
 restore
 restored=true
