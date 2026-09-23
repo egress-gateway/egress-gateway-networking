@@ -1,0 +1,62 @@
+apiVersion: v1
+kind: Namespace
+metadata: {name: networking-np, labels: {istio-injection: disabled}}
+---
+apiVersion: v1
+kind: Namespace
+metadata: {name: networking-np-other, labels: {istio-injection: disabled}}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: httpbin-only, namespace: networking-np}
+spec:
+  podSelector:
+    matchLabels: {networking.egress/protected: 'true'}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: networking-np}
+          podSelector:
+            matchLabels: {app: httpbin}
+      ports: [{protocol: TCP, port: 8080}]
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: client
+  namespace: networking-np
+  labels: {app: client, networking.egress/protected: 'true'}
+spec:
+  automountServiceAccountToken: false
+  containers:
+    - name: probe
+      image: ${PROBE_IMAGE}
+      imagePullPolicy: Never
+      args: [idle]
+      securityContext: {runAsUser: 10000, runAsNonRoot: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: control, namespace: networking-np-other}
+spec:
+  automountServiceAccountToken: false
+  containers:
+    - name: probe
+      image: ${PROBE_IMAGE}
+      imagePullPolicy: Never
+      args: [idle]
+      securityContext: {runAsUser: 10000, runAsNonRoot: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+---
+apiVersion: v1
+kind: Pod
+metadata: {name: node, namespace: networking-np-other}
+spec:
+  hostNetwork: true
+  automountServiceAccountToken: false
+  containers:
+    - name: probe
+      image: ${PROBE_IMAGE}
+      imagePullPolicy: Never
+      args: [serve, --tcp, '18081']
+      securityContext: {runAsUser: 10000, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}

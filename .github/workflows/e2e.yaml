@@ -7,8 +7,19 @@ permissions:
   contents: read
 jobs:
   network:
+    name: ${{ matrix.name }}
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {name: Istio baseline, profile: istio-only, acceptance: baseline, experiment: acceptance}
+          - {name: Calico enforce, profile: calico-istio, acceptance: enforce, experiment: acceptance}
+          - {name: Additive allow negative control, profile: calico-istio, acceptance: enforce, experiment: negative}
+    env:
+      E2E_ARGS: --profile=${{ matrix.profile }} --acceptance=${{ matrix.acceptance }}
+      EXPERIMENT: ${{ matrix.experiment }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -20,13 +31,32 @@ jobs:
           cache: true
       - name: Register every acceptance case before environment setup
         id: inventory
-        run: go run ./cmd/networking-e2e inventory
+        run: |
+          command=inventory
+          if [[ "$EXPERIMENT" == negative ]]; then command=inventory-negative; fi
+          go run ./cmd/networking-e2e "$command" $E2E_ARGS
       - id: prerequisites
         run: sudo apt-get update && sudo apt-get install -y jq gettext-base
       - id: tools
         run: bash scripts/ci-tools.sh
       - id: network
-        run: make e2e
+        run: |
+          if [[ "$EXPERIMENT" == acceptance ]]; then
+            make e2e
+          else
+            make e2e-up
+            set +e
+            make e2e-negative
+            result=$?
+            set -e
+            test "$result" -ne 0
+            jq -es 'length == 1 and all(.verified == true and .observed == "violated" and .restored == "satisfied")' .e2e/artifacts/run-*/negative-control.json
+          fi
+      - name: Clean the negative control environment
+        id: cleanup
+        if: always() && matrix.experiment == 'negative'
+        run: |
+          if [[ -d .e2e/state ]]; then make e2e-down; fi
       - name: Publish complete case table
         if: always()
         env:
@@ -37,7 +67,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: networking-e2e-${{ github.event.pull_request.head.sha || github.sha }}
+          name: networking-e2e-${{ matrix.profile }}-${{ matrix.experiment }}-${{ github.event.pull_request.head.sha || github.sha }}
           path: .e2e/artifacts/
           include-hidden-files: true
           retention-days: 7

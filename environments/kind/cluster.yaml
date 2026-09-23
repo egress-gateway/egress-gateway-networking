@@ -7,5 +7,7 @@ nodes:
         containerPath: /etc/networking-e2e-owner
         readOnly: true
 networking:
-  disableDefaultCNI: false
+  disableDefaultCNI: ${DEFAULT_CNI_DISABLED}
   ipFamily: ipv4
+  podSubnet: 10.244.0.0/16
+  kubeProxyMode: iptables

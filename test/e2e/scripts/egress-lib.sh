@@ -9,13 +9,17 @@ receiver_owned() {
   jq -e --arg owner "$state_dir/owner" --arg cluster "$cluster" '.[0] | .Config.Labels["networking.e2e.cluster"] == $cluster and any(.Mounts[]; .Source == $owner and .Destination == "/owner" and .RW == false)' <<< "$info" >/dev/null
   [[ "$(jq -r '.[0].Id' <<< "$info")" == "$(cat "$state_dir/$role-id")" ]] || { echo 'receiver identity changed' >&2; return 1; }
 }
+receiver_snapshot() {
+  receiver_owned "$1"
+  docker inspect "$cluster-$1" | jq -ce '.[0]|select(.State.Running==true)|{id:.Id,started:.State.StartedAt,restarts:.RestartCount}'
+}
 pod_snapshot() {
   k -n "$1" get pod "$2" -o json | jq -c '{uid:.metadata.uid,ip:.status.podIP,containers:([.status.containerStatuses[]?,.status.initContainerStatuses[]?]|map({name,containerID,restartCount}))}'
 }
 sandbox_pid() {
   local ns=$1 name=$2 uid sid info
   uid=$(k -n "$ns" get pod "$name" -o jsonpath='{.metadata.uid}')
-  sid=$(docker exec "$cluster-control-plane" crictl pods --namespace "$ns" --name "^$name$" -q)
+  sid=$(docker exec "$cluster-control-plane" crictl pods --namespace "^$ns$" --name "^$name$" --state Ready -q)
   [[ "$sid" =~ ^[a-f0-9]+$ ]] || { echo 'ambiguous sandbox' >&2; return 1; }
   info=$(docker exec "$cluster-control-plane" crictl inspectp "$sid")
   [[ "$(jq -r '.status.metadata.uid' <<< "$info")" == "$uid" ]] || { echo 'sandbox UID mismatch' >&2; return 1; }
@@ -24,7 +28,7 @@ sandbox_pid() {
 envoy_pid() {
   local ns=$1 name=$2 sid cid parent child
   sandbox_pid "$ns" "$name" >/dev/null
-  sid=$(docker exec "$cluster-control-plane" crictl pods --namespace "$ns" --name "^$name$" -q)
+  sid=$(docker exec "$cluster-control-plane" crictl pods --namespace "^$ns$" --name "^$name$" --state Ready -q)
   cid=$(docker exec "$cluster-control-plane" crictl ps --pod "$sid" --name istio-proxy -q)
   [[ "$cid" =~ ^[a-f0-9]+$ ]] || return 1
   parent=$(docker exec "$cluster-control-plane" crictl inspect "$cid" | jq -er '.info.pid')

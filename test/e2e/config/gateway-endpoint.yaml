@@ -1,0 +1,25 @@
+# Address-form acceptance fixture. It uses the same official gateway listeners.
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata: {name: gateway-endpoint, namespace: networking-egress}
+spec:
+  hosts: [gateway-endpoint.test]
+  addresses: [${GATEWAY_ENDPOINT}]
+  ports:
+    - {number: 15443, name: http, protocol: HTTP}
+    - {number: 15444, name: tls, protocol: TLS}
+  location: MESH_INTERNAL
+  resolution: STATIC
+  endpoints:
+    - address: ${GATEWAY_ENDPOINT}
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata: {name: gateway-endpoint, namespace: networking-egress}
+spec:
+  host: gateway-endpoint.test
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+      sni: gateway.networking-gateway.svc.cluster.local
+      subjectAltNames: [spiffe://cluster.local/ns/networking-gateway/sa/gateway]

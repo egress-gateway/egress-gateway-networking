@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"time"
@@ -20,6 +21,7 @@ import (
 // namespace, never in the unprivileged application under test.
 func capture(ctx context.Context, f *flag.FlagSet, args []string) error {
 	port := f.Int("port", 0, "destination port")
+	device := f.String("interface", "", "capture only this network interface")
 	stopNow := f.Bool("stop", false, "finish an existing capture")
 	stop := f.String("stop-file", "", "stop when this owned file exists")
 	if err := f.Parse(args); err != nil {
@@ -36,6 +38,15 @@ func capture(ctx context.Context, f *flag.FlagSet, args []string) error {
 		return err
 	}
 	defer unix.Close(fd)
+	if *device != "" {
+		iface, err := net.InterfaceByName(*device)
+		if err != nil {
+			return err
+		}
+		if err := unix.Bind(fd, &unix.SockaddrLinklayer{Protocol: htons(unix.ETH_P_ALL), Ifindex: iface.Index}); err != nil {
+			return err
+		}
+	}
 	compiled, err := bpf.Assemble(captureFilter(uint16(*port)))
 	if err != nil {
 		return err

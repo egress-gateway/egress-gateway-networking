@@ -183,3 +183,23 @@ func TestDenialNeedsLosslessCompleteObservationAndNeverIgnoresLateTraffic(t *tes
 		})
 	}
 }
+
+func TestCalicoNodeAcceptedTCPIsDeliveryWithoutApplicationEcho(t *testing.T) {
+	dir := t.TempDir()
+	for name, body := range map[string]string{
+		"profile":              "calico-istio",
+		"facts.json":           `{"id":"x","protocol":"tcp","target":"node","client":"workload","phase":"healthy","source_ip":"10.0.0.1","fault_verified":true,"restored":true,"receiver_stable":true}`,
+		"control-before.jsonl": `{"id":"x-control-before","attempted":true,"success":true}`,
+		"control-after.jsonl":  `{"id":"x-control-after","attempted":true,"success":true}`,
+		"probe.jsonl":          `{"id":"x","attempted":true,"success":false}`,
+		"receiver.log":         `{"event":"connection","remote":"10.0.0.1:42424"}`,
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, reason, err := evaluateEgress(dir, "x", "deny", egressInputs{Protocol: "tcp", Target: "node", Client: "workload", Phase: "healthy"})
+	if err != nil || result != Violated {
+		t.Fatalf("accepted TCP concealed: %s %s %v", result, reason, err)
+	}
+}

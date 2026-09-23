@@ -16,3 +16,10 @@ for app in curl httpbin; do
 done
 docker exec "$cluster-control-plane" sh -c 'cat /etc/cni/net.d/*.conflist' > "$artifacts/cni-chain.json"
 jq -es 'any(.[]; any(.plugins[]?; .type == "istio-cni"))' "$artifacts/cni-chain.json" >/dev/null
+if [[ $(jq -r .profile "$state_dir/environment.json") == calico-istio ]]; then
+  jq -es 'length==1 and .[0].plugins[0].type=="calico" and ([.[0].plugins[]|select(.type=="istio-cni")]|length)==1' "$artifacts/cni-chain.json" >/dev/null
+  k -n calico-system rollout status daemonset/calico-node --timeout=90s
+  k -n kube-system rollout status daemonset/kube-proxy --timeout=90s
+  k get installations.operator.tigera.io default -o json | jq -e '.spec.calicoNetwork|.linuxDataplane=="Iptables" and .bgp=="Disabled" and .kubeProxyManagement=="Disabled" and (.ipPools|length)==1 and .ipPools[0].encapsulation=="VXLAN"' >/dev/null
+  k get felixconfigurations.crd.projectcalico.org default -o json | jq -e '.spec.defaultEndpointToHostAction=="Drop" and .spec.bpfEnabled==false' >/dev/null
+fi

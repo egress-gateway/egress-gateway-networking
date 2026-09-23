@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 source "$(dirname "$0")/common.sh"
 source "$(dirname "$0")/egress-lib.sh"
+source "$(dirname "$0")/calico-observation-lib.sh"
 need_id
 receiver_owned origin
 receiver_owned quic
@@ -62,6 +63,7 @@ cleanup() {
   local rc=$? safe=true
   [[ "$recovery_failed" != true ]] || safe=false
   capture_finish || { rc=1; safe=false; }
+  calico_observe_finish || { rc=1; safe=false; }
   if [[ "$restored" != true ]]; then restore || { rc=1; safe=false; }; fi
   if [[ "$rc" == 0 && "$safe" == true && "$defer_cleanup" == true ]]; then exit 0; fi
   if [[ -n "$fault_pod" ]]; then k -n networking-egress delete pod "$fault_pod" --ignore-not-found --wait=true --timeout=60s >/dev/null || { rc=1; safe=false; }; fi
@@ -80,12 +82,15 @@ control() {
   local part=$1
   if [[ "$target" == gateway || "$client" == intruder || "$phase" == wrong-san || "$phase" == repair || "$phase" == identity-down ]]; then
     k -n networking-egress exec "$(epod networking-egress workload)" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$test_id-control-$part" --timeout 5s > "$artifacts/control-$part.jsonl"
+  elif [[ "$target" == node && $(jq -r '.profile' "$state_dir/environment.json") == calico-istio ]]; then
+    docker exec "$cluster-origin" /probe request --protocol "$protocol" --target "$address" --id "$test_id-control-$part" --timeout 5s > "$artifacts/control-$part.jsonl"
   else
     k -n networking-controls exec "$control_pod" -c probe -- /probe request --protocol "$protocol" --target "$address" --id "$test_id-control-$part" "${extra[@]}" --timeout 5s > "$artifacts/control-$part.jsonl"
   fi
   jq -se --arg id "$test_id-control-$part" 'any(.[]; .id==$id and .success==true)' "$artifacts/control-$part.jsonl" >/dev/null
 }
 capture_start
+calico_observe_start
 control before
 component_state() {
   k get pods -A -o json | jq '[.items[]|select(.metadata.namespace=="networking-egress" or .metadata.namespace=="networking-gateway" or .metadata.namespace=="istio-system")|{name:.metadata.name,namespace:.metadata.namespace,uid:.metadata.uid,ip:.status.podIP,conditions:.status.conditions,containers:([.status.containerStatuses[]?,.status.initContainerStatuses[]?]|map({name,containerID,restartCount,state,ready}))}]' > "$artifacts/components-$1.json"
@@ -238,6 +243,7 @@ if [[ "$phase" != healthy && "$phase" != untrusted ]]; then component_state rest
 verify_recovery
 control after
 capture_finish
+calico_observe_finish
 snapshot_receiver > "$artifacts/receiver-after.json"
 cmp "$artifacts/receiver-before.json" "$artifacts/receiver-after.json"
 receiver_stable=true
@@ -247,3 +253,4 @@ if [[ "$phase" == repair || "$phase" == identity-down ]]; then source_pod="$faul
 jq -n --arg id "$test_id" --arg started "$started" --arg role "$receiver_role" --arg ns "$receiver_ns" --arg pod "$receiver_pod" --arg container "$receiver_container" --arg gateway "$gateway_pod" --arg workload "$source_pod" --arg client "$client" --arg fault "$fault_pod" '{id:$id,started:$started,role:$role,namespace:$ns,pod:$pod,container:$container,gateway:$gateway,workload:$workload,client:$client,fault:$fault}' > "$artifacts/log-context.json"
 "$BASH" "$root/test/e2e/scripts/egress-logs.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id"
 jq -n --arg id "$test_id" --arg protocol "$protocol" --arg phase "$phase" --arg target "$target" --arg client "$client" --arg source_ip "$source_ip" --arg fault_start "$fault_start" --arg fault_end "$fault_end" --argjson startup_blocked "$startup_blocked" --argjson fault_verified "$fault_verified" --argjson restored "$restored" --argjson receiver_stable "$receiver_stable" '{id:$id,protocol:$protocol,phase:$phase,target:$target,client:$client,fault_start:$fault_start,fault_end:$fault_end,source_ip:$source_ip,startup_blocked:$startup_blocked,fault_verified:$fault_verified,restored:$restored,receiver_stable:$receiver_stable}' > "$artifacts/facts.json"
+if [[ $(jq -r .profile "$state_dir/environment.json") == calico-istio ]]; then printf '%s\n' calico-istio > "$artifacts/profile"; fi

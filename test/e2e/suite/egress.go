@@ -14,6 +14,7 @@ import (
 )
 
 type probeRecord struct {
+	UID           int       `json:"uid"`
 	Dropped       *uint32   `json:"dropped"`
 	KernelPackets *uint32   `json:"kernel_packets"`
 	Captured      *uint32   `json:"captured"`
@@ -28,6 +29,9 @@ type probeRecord struct {
 	Success       bool      `json:"success"`
 	Local         string    `json:"local"`
 	Remote        string    `json:"remote"`
+	Destination   string    `json:"destination"`
+	Interface     string    `json:"interface"`
+	Reason        string    `json:"reason"`
 	Digest        string    `json:"digest"`
 	Error         string    `json:"error"`
 }
@@ -198,6 +202,15 @@ func evaluateEgress(dir, id, contract string, expected egressInputs) (string, st
 	}
 	switch contract {
 	case "deny":
+		profile, _ := os.ReadFile(filepath.Join(dir, "profile"))
+		calico := strings.TrimSpace(string(profile)) == "calico-istio"
+		if calico && facts.Target == "node" && facts.SourceIP != "" {
+			for _, p := range receiver {
+				if (p.Event == "connection" || p.Event == "received") && peerIP(p.Remote) == facts.SourceIP {
+					return Violated, "node listener accepted the forbidden source connection", nil
+				}
+			}
+		}
 		if delivered {
 			if facts.Target == "external" && facts.Client == "workload" && facts.Phase == "healthy" && (facts.Protocol == "http" || facts.Protocol == "https") {
 				if gatewayEvidence(dir, id, facts.Protocol, probe) == nil {
@@ -224,6 +237,9 @@ func evaluateEgress(dir, id, contract string, expected egressInputs) (string, st
 		// The observer owns a complete case window. User-space read timestamps
 		// cannot safely exclude a late packet after the client's deadline.
 		for _, packet := range packets {
+			if calico && facts.Target == "node" {
+				continue
+			} // AF_PACKET precedes the host INPUT filter.
 			if packet.Event != "network-packet" {
 				continue
 			}
@@ -262,7 +278,15 @@ func evaluateEgress(dir, id, contract string, expected egressInputs) (string, st
 		}
 		for _, packet := range packets {
 			if packet.Event == "network-packet" && !controls[packet.Remote] {
+				if calico && facts.Target == "node" && peerIP(packet.Remote) == facts.SourceIP {
+					continue
+				}
 				return Inconclusive, "unattributed receiver traffic prevents an isolation conclusion", nil
+			}
+		}
+		if calico {
+			if err := checkEnforcement(dir, id, facts.SourceIP); err != nil {
+				return Inconclusive, err.Error(), nil
 			}
 		}
 		return Satisfied, "bounded receiver packet observation proves no delivery; bracketing controls and stable receiver verified", nil
@@ -335,6 +359,10 @@ func validateRecovery(probes []probeRecord, id string, after time.Time, successe
 }
 
 func gatewayEvidence(dir, id, protocol string, probes []probeRecord) error {
+	return gatewayHostEvidence(dir, id, protocol, "gateway.networking-gateway.svc.cluster.local", probes)
+}
+
+func gatewayHostEvidence(dir, id, protocol, host string, probes []probeRecord) error {
 	type hop struct {
 		ID         string `json:"test_id"`
 		Cluster    string `json:"upstream_cluster"`
@@ -391,7 +419,7 @@ func gatewayEvidence(dir, id, protocol string, probes []probeRecord) error {
 		if !match {
 			continue
 		}
-		if !strings.Contains(c.Cluster, "|"+port+"||gateway.networking-gateway.svc.cluster.local") || !validTLS(c.UpTLS) || c.UpPeer != "spiffe://cluster.local/ns/networking-gateway/sa/gateway" {
+		if !strings.Contains(c.Cluster, "|"+port+"||"+host) || !validTLS(c.UpTLS) || c.UpPeer != "spiffe://cluster.local/ns/networking-gateway/sa/gateway" {
 			return errors.New("a correlated request used an unexpected upstream path or identity")
 		}
 		paired := false

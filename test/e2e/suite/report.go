@@ -49,16 +49,34 @@ type Report struct {
 	Security       string            `json:"security_verdict"`
 	Acceptance     string            `json:"acceptance"`
 	Cases          []CaseResult      `json:"cases"`
+	Operations     []OperationTiming `json:"operations,omitempty"`
 	Dir            string            `json:"-"`
+}
+
+type OperationTiming struct {
+	Script  string    `json:"script"`
+	Started time.Time `json:"started"`
+	Seconds float64   `json:"seconds"`
+	Error   string    `json:"error,omitempty"`
 }
 
 func caseID(name string) string { id, _, _ := strings.Cut(name, " "); return id }
 
 func NewReport(root, dir, mode, sha string, dirty bool) (*Report, error) {
+	return NewProfileReport(root, dir, "istio-only", mode, sha, dirty)
+}
+
+func NewProfileReport(root, dir, profile, mode, sha string, dirty bool) (*Report, error) {
+	if profile != "istio-only" && profile != "calico-istio" {
+		return nil, fmt.Errorf("unknown profile %q", profile)
+	}
+	if profile == "calico-istio" && mode != "enforce" {
+		return nil, errors.New("calico-istio requires enforce acceptance")
+	}
 	if mode != "baseline" && mode != "enforce" {
 		return nil, fmt.Errorf("unknown acceptance mode %q", mode)
 	}
-	r := &Report{Mode: mode, Profile: "istio-only", SHA: sha, Dirty: dirty, Dir: dir, RunID: filepath.Base(dir), Started: time.Now().UTC()}
+	r := &Report{Mode: mode, Profile: profile, SHA: sha, Dirty: dirty, Dir: dir, RunID: filepath.Base(dir), Started: time.Now().UTC()}
 	var baseline struct {
 		Profile string            `json:"profile"`
 		Inputs  string            `json:"inputs"`
@@ -71,11 +89,15 @@ func NewReport(root, dir, mode, sha string, dirty bool) (*Report, error) {
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	if baseline.Profile != "" && baseline.Profile != r.Profile {
+	if profile == "istio-only" && baseline.Profile != "" && baseline.Profile != r.Profile {
 		return nil, errors.New("baseline profile mismatch")
 	}
 	r.BaselineInputs = baseline.Inputs
 	r.Configuration = map[string]string{"topology": "single-node IPv4; kind default network; chained Istio CNI; sidecar + official gateway"}
+	if profile == "calico-istio" {
+		r.Configuration["topology"] = "single-node IPv4; Calico iptables/VXLAN; kube-proxy; chained Istio CNI; isolated NP fixture"
+		r.Configuration["CALICO_VERSION"] = "v3.32.2"
+	}
 	if run := os.Getenv("GITHUB_RUN_ID"); run != "" {
 		r.Configuration["ci_run"] = run
 		r.Configuration["ci_attempt"] = os.Getenv("GITHUB_RUN_ATTEMPT")
@@ -88,7 +110,11 @@ func NewReport(root, dir, mode, sha string, dirty bool) (*Report, error) {
 			}
 		}
 	}
-	ts := godog.TestSuite{Options: &godog.Options{Paths: []string{filepath.Join(root, "test/e2e/features")}}}
+	tags := ""
+	if profile == "istio-only" {
+		tags = "~@calico"
+	}
+	ts := godog.TestSuite{Options: &godog.Options{Paths: []string{filepath.Join(root, "test/e2e/features")}, Tags: tags}}
 	features, err := ts.RetrieveFeatures()
 	if err != nil {
 		return nil, err
@@ -239,10 +265,16 @@ func (r *Report) Markdown() string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "# Networking E2E\n\n**Acceptance: %s (%s)** · **Security: %s**\n\nSHA: `%s` · dirty: `%t` · run: `%s` · profile: `%s` · inputs: `%s`\n\n", r.Acceptance, r.Mode, r.Security, r.SHA, r.Dirty, r.RunID, r.Profile, r.InputDigest)
+	if r.Configuration["purpose"] != "" {
+		fmt.Fprintf(&b, "**Purpose: %s**\n\n", escape(r.Configuration["purpose"]))
+	}
 	if r.Configuration["ci_run"] != "" {
 		fmt.Fprintf(&b, "CI run: `%s` · attempt: `%s`\n\n", escape(r.Configuration["ci_run"]), escape(r.Configuration["ci_attempt"]))
 	}
 	fmt.Fprintf(&b, "Environment: %s · kind %s · Istio %s · node `%s`\n\n", escape(r.Configuration["topology"]), escape(r.Configuration["KIND_VERSION"]), escape(r.Configuration["ISTIO_VERSION"]), escape(r.Configuration["KIND_IMAGE"]))
+	if r.Configuration["kernel"] != "" {
+		fmt.Fprintf(&b, "Runtime: %s\n\n", escape(r.Configuration["kernel"]))
+	}
 	fmt.Fprintf(&b, "Cases: %d · ✅ satisfied: %d · ❌ violated: %d · 🛑 execution errors: %d · ⚠️ inconclusive: %d · ⏸ not run: %d\n\n", len(r.Cases), counts[Satisfied], counts[Violated], counts[ExecutionError], counts[Inconclusive], counts[NotRun])
 	fmt.Fprintf(&b, "Acceptance cases: %d passed / %d failed. Failing IDs: %s\n\n", passed, len(failed), strings.Join(failed, ", "))
 	if r.RunError != "" {
@@ -255,6 +287,13 @@ func (r *Report) Markdown() string {
 			mark = "✅ PASS"
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s %s | %s | %s | %.3fs | `%s` %s |\n", escape(c.Name), escape(c.Requirement), icon[c.Actual], c.Actual, escape(c.Expected), mark, c.DurationSeconds, escape(c.Evidence), escape(c.Reason))
+	}
+	if len(r.Operations) > 0 {
+		fmt.Fprint(&b, "\n<details><summary>Phase and operation timings</summary>\n\n| Operation | Duration | Error |\n|---|---:|---|\n")
+		for _, op := range r.Operations {
+			fmt.Fprintf(&b, "| `%s` | %.3fs | %s |\n", escape(op.Script), op.Seconds, escape(op.Error))
+		}
+		fmt.Fprint(&b, "\n</details>\n")
 	}
 	return b.String()
 }

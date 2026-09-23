@@ -3,6 +3,7 @@ module github.com/egress-gateway/egress-gateway-networking
 go 1.26.0
 
 require (
+	github.com/cilium/ebpf v0.22.0
 	github.com/cucumber/godog v0.16.0
 	github.com/quic-go/quic-go v0.63.0
 	golang.org/x/net v0.56.0
