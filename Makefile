@@ -4,14 +4,14 @@ E2E_ARGS ?=
 
 .PHONY: check fmt e2e e2e-up e2e-test e2e-down
 check:
-	@test -z "$$(gofmt -l cmd test/e2e/environment test/e2e/suite)" || { echo 'Run make fmt'; exit 1; }
+	@test -z "$$(gofmt -l cmd test/e2e)" || { echo 'Run make fmt'; exit 1; }
 	@$(BASH_BIN) -c 'for f in install/scripts/*.sh environments/kind/*.sh test/e2e/scripts/*.sh scripts/*.sh; do bash -n "$$f" || exit; done'
 	$(GO) vet ./...
 	$(GO) test -race ./...
 	$(GO) build -o bin/networking-e2e ./cmd/networking-e2e
 
 fmt:
-	gofmt -w cmd test/e2e/environment test/e2e/suite
+	gofmt -w cmd test/e2e
 
 e2e:
 	$(GO) run ./cmd/networking-e2e e2e $(E2E_ARGS)

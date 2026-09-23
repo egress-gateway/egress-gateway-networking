@@ -1,0 +1,34 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${CLIENT_NAME}
+  namespace: ${CLIENT_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: '${CLIENT_NAME}'}
+  template:
+    metadata:
+      labels: {app: '${CLIENT_NAME}', networking.egress/protected: '${PROTECTED}'}
+      annotations: {sidecar.istio.io/inject: '${INJECT}'}
+    spec:
+      serviceAccountName: ${CLIENT_SA}
+      containers:
+        - name: probe
+          image: ${PROBE_IMAGE}
+          imagePullPolicy: Never
+          args: [idle]
+          securityContext:
+            runAsUser: 10000
+            allowPrivilegeEscalation: false
+            capabilities: {drop: [ALL]}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+          volumeMounts:
+            - {name: origin-trust, mountPath: /trust, readOnly: true}
+            - {name: mesh-trust, mountPath: /mesh, readOnly: true}
+      volumes:
+        - name: origin-trust
+          configMap: {name: origin-trust}
+        - name: mesh-trust
+          configMap: {name: istio-ca-root-cert, optional: true}

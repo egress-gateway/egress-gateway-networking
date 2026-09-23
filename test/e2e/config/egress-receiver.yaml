@@ -1,0 +1,36 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ${RECEIVER_NAME}
+  namespace: ${RECEIVER_NAMESPACE}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: '${RECEIVER_NAME}'}
+  template:
+    metadata:
+      labels: {app: '${RECEIVER_NAME}'}
+      annotations: {sidecar.istio.io/inject: 'false'}
+    spec:
+      hostNetwork: ${HOST_NETWORK}
+      dnsPolicy: ClusterFirstWithHostNet
+      containers:
+        - name: probe
+          image: ${PROBE_IMAGE}
+          imagePullPolicy: Never
+          args: [serve, --tcp, '${RECEIVER_PORT}']
+          # Independent case controls verify listeners without background
+          # readiness connections contaminating packet-absence evidence.
+          securityContext: {runAsUser: 10000, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+          resources:
+            requests: {cpu: 10m, memory: 16Mi}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: ${RECEIVER_NAME}
+  namespace: ${RECEIVER_NAMESPACE}
+spec:
+  selector: {app: '${RECEIVER_NAME}'}
+  ports:
+    - {name: tcp, port: ${RECEIVER_PORT}, targetPort: ${RECEIVER_PORT}}

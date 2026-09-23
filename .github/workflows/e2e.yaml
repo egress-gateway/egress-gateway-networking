@@ -8,7 +8,7 @@ permissions:
 jobs:
   network:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -18,10 +18,22 @@ jobs:
         with:
           go-version: '1.26.7'
           cache: true
-      - run: sudo apt-get update && sudo apt-get install -y jq gettext-base
-      - run: bash scripts/ci-tools.sh
-      - run: make e2e
+      - name: Register every acceptance case before environment setup
+        id: inventory
+        run: go run ./cmd/networking-e2e inventory
+      - id: prerequisites
+        run: sudo apt-get update && sudo apt-get install -y jq gettext-base
+      - id: tools
+        run: bash scripts/ci-tools.sh
+      - id: network
+        run: make e2e
+      - name: Publish complete case table
+        if: always()
+        env:
+          CI_OUTCOMES: 'inventory=${{ steps.inventory.outcome }} prerequisites=${{ steps.prerequisites.outcome }} tools=${{ steps.tools.outcome }} network=${{ steps.network.outcome }}'
+        run: go run ./cmd/networking-e2e summary --ci-outcomes "$CI_OUTCOMES" >> "$GITHUB_STEP_SUMMARY"
       - name: Upload safe network diagnostics
+        id: evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -29,4 +41,11 @@ jobs:
           path: .e2e/artifacts/
           include-hidden-files: true
           retention-days: 7
-          if-no-files-found: warn
+          if-no-files-found: error
+      - name: Link report bundle
+        if: always()
+        env:
+          EVIDENCE_URL: ${{ steps.evidence.outputs.artifact-url }}
+        run: |
+          test -n "$EVIDENCE_URL"
+          printf '\n[Download the complete report and case evidence](%s)\n' "$EVIDENCE_URL" >> "$GITHUB_STEP_SUMMARY"
