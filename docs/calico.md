@@ -96,7 +96,10 @@ even before Felix has created that new endpoint's policy chain.
 
 Felix is paused only inside the owned kind environment and its process state is
 verified across the observation. Application and init probes run after the
-configured 10-second CNI policy wait expires. Recovery rechecks both allowed
+configured 10-second CNI policy wait expires. A safely blocked sandbox is also
+accepted only with an explicit, Pod-associated Calico policy refusal after the
+wait deadline, no container execution, and complete receiver observation.
+Unrelated Pending, scheduling or image errors cannot pass. Recovery rechecks both allowed
 HTTP and forbidden TCP using the same evidence-based classifier. Failed recovery
 leaves a fault marker and stops subsequent scenarios. Do not delete that marker
 without diagnosing and restoring the owned environment.

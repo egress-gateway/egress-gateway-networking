@@ -1,6 +1,6 @@
 {
   "profile": "istio-only",
-  "inputs": "629bd26a8bb46f0a458290a12b73b1bebc64d384da899111d366ea56e1ac84ac",
+  "inputs": "9c89f7cbfda3a0934408a01bf2ec4461c31482ec4fbfbde3a9a0fcc67f34e946",
   "cases": {
     "P0-01": "satisfied",
     "P0-02": "satisfied",
