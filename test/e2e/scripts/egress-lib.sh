@@ -100,13 +100,19 @@ capture_finish() {
 # Mark the entire verification stage unsafe until every operation succeeds.
 verify_recovery() {
   recovery_failed=true
-if [[ "$phase" == repair || "$phase" == identity-down ]]; then
-  k -n networking-egress wait pod "$fault_pod" --for=condition=Ready --timeout=180s >/dev/null
-  k -n networking-egress exec "$fault_pod" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$test_id-recovered" --timeout 5s > "$artifacts/recovered.jsonl"
-  if ! jq -se --arg id "$test_id-recovered" 'any(.[];.id==$id and .success==true)' "$artifacts/recovered.jsonl" >/dev/null; then recovery_failed=true; exit 1; fi
-elif [[ "$phase" != healthy && "$phase" != untrusted ]]; then
-  k -n networking-egress exec "$(epod networking-egress workload)" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$test_id-recovery" --duration 15s --successes 2 --timeout 5s > "$artifacts/recovery.jsonl"
-  if ! jq -se --arg id "$test_id-recovery" 'length>=2 and (.[-2:]|all(.[];.id==$id and .success==true))' "$artifacts/recovery.jsonl" >/dev/null; then recovery_failed=true; exit 1; fi
-fi
+  local recovery_pod recovery_id recovery_file count
+  if [[ "$phase" == healthy || "$phase" == untrusted ]]; then recovery_failed=false; return; fi
+  if [[ "$phase" == repair || "$phase" == identity-down ]]; then
+    k -n networking-egress wait pod "$fault_pod" --for=condition=Ready --timeout=180s >/dev/null
+    recovery_pod=$fault_pod; recovery_id="$test_id-recovered"; recovery_file=recovered.jsonl; count=1
+  else
+    recovery_pod=$(epod networking-egress workload); recovery_id="$test_id-recovery"; recovery_file=recovery.jsonl; count=2
+  fi
+  # Pod readiness can precede the workload Envoy's endpoint update. Keep
+  # convergence attempts separate from the strictly authenticated proof.
+  k -n networking-egress exec "$recovery_pod" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$test_id-recovery-ready" --duration 15s --successes 1 --timeout 5s > "$artifacts/recovery-ready.jsonl"
+  jq -se --arg id "$test_id-recovery-ready" 'length>0 and .[-1].id==$id and .[-1].success==true' "$artifacts/recovery-ready.jsonl" >/dev/null
+  k -n networking-egress exec "$recovery_pod" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$recovery_id" --duration 15s --successes "$count" --timeout 5s > "$artifacts/$recovery_file"
+  jq -se --arg id "$recovery_id" --argjson count "$count" 'length==$count and all(.[];.id==$id and .success==true)' "$artifacts/$recovery_file" >/dev/null
   recovery_failed=false
 }

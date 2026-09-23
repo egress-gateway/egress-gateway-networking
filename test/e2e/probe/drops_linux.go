@@ -99,7 +99,7 @@ func traceDrops(ctx context.Context, f *flag.FlagSet, args []string) error {
 	read(-8, 2, asm.R7, offsets[3])
 	ins = append(ins, asm.LoadMem(asm.R9, asm.RFP, -8, asm.Half), asm.Add.Reg(asm.R8, asm.R9))
 	read(-64, 20, asm.R8, 0)
-	ins = append(ins, asm.LoadMem(asm.R1, asm.RFP, -64, asm.Byte), asm.And.Imm(asm.R1, 0xf0), asm.JNE.Imm(asm.R1, 0x40, "exit"), asm.LoadMem(asm.R1, asm.RFP, -48, asm.Word), asm.JNE.Imm(asm.R1, int32(binary.NativeEndian.Uint32(ip[:])), "exit"), asm.LoadMem(asm.R1, asm.RFP, -55, asm.Byte), asm.JEq.Imm(asm.R1, 6, "transport"), asm.JNE.Imm(asm.R1, 17, "exit"), asm.LoadMem(asm.R1, asm.RFP, -64, asm.Byte).WithSymbol("transport"), asm.And.Imm(asm.R1, 15), asm.LSh.Imm(asm.R1, 2), asm.Add.Reg(asm.R8, asm.R1))
+	ins = append(ins, asm.LoadMem(asm.R1, asm.RFP, -64, asm.Byte), asm.And.Imm(asm.R1, 0xf0), asm.JNE.Imm(asm.R1, 0x40, "exit"), asm.LoadMem(asm.R1, asm.RFP, -48, asm.Word), dropDestinationMismatch(ip), asm.LoadMem(asm.R1, asm.RFP, -55, asm.Byte), asm.JEq.Imm(asm.R1, 6, "transport"), asm.JNE.Imm(asm.R1, 17, "exit"), asm.LoadMem(asm.R1, asm.RFP, -64, asm.Byte).WithSymbol("transport"), asm.And.Imm(asm.R1, 15), asm.LSh.Imm(asm.R1, 2), asm.Add.Reg(asm.R8, asm.R1))
 	read(-44, 4, asm.R8, 0)
 	ins = append(ins, asm.LoadMem(asm.R1, asm.RFP, -42, asm.Half), asm.JNE.Imm(asm.R1, int32(binary.NativeEndian.Uint16(port[:])), "exit"))
 	read(-8, 8, asm.R7, offsets[4])
@@ -189,4 +189,10 @@ func kernelFieldOffset(typ btf.Type, field string) (int32, bool) {
 		}
 	}
 	return 0, false
+}
+
+// LoadMem zero-extends the IPv4 word. A 64-bit immediate jump would sign-extend
+// addresses with the high bit set and incorrectly reject their drop events.
+func dropDestinationMismatch(ip [4]byte) asm.Instruction {
+	return asm.JNE.Imm32(asm.R1, int32(binary.NativeEndian.Uint32(ip[:])), "exit")
 }

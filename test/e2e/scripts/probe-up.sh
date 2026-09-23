@@ -14,6 +14,11 @@ kind load docker-image --name "$cluster" "$PROBE_IMAGE"
 chmod 0755 "$build/probe"
 docker cp "$build/probe" "$cluster-control-plane:/networking-probe"
 printf '%s\n' "$PROBE_IMAGE" > "$state_dir/probe-image"
+if [[ $(jq -r '.profile' "$state_dir/environment.json") == calico-istio ]]; then
+  CGO_ENABLED=0 GOOS=linux GOARCH="$architecture" go test -c -o "$build/probe-tests" "$root/test/e2e/probe"
+  docker cp "$build/probe-tests" "$cluster-control-plane:/networking-probe-tests"
+  docker exec -e REQUIRE_BPF_TEST=1 "$cluster-control-plane" /networking-probe-tests -test.run '^TestDropAddressComparisonInKernel$' -test.v > "$artifacts/kernel-observer-test.txt"
+fi
 network=$(docker inspect "$cluster-control-plane" | jq -er '.[0].NetworkSettings.Networks | keys | if length == 1 then .[0] else error("ambiguous node network") end')
 for role in origin quic; do
   name="$cluster-$role"
