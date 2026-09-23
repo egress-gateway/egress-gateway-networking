@@ -209,7 +209,7 @@ case "$phase" in
     k -n networking-egress get pod "$fault_pod" -o json | jq -e 'any(.status.initContainerStatuses[]?;.name=="test-gate" and .state.running!=null)' >/dev/null
     if [[ "$phase" == repair ]]; then repair_disabled=true; repair_setting false; remove_redirect "$fault_pod"
     else istiod_replicas=$(k -n istio-system get deployment istiod -o jsonpath='{.spec.replicas}'); k -n istio-system scale deployment istiod --replicas=0 >/dev/null; k -n istio-system wait pod -l app=istiod --for=delete --timeout=90s >/dev/null; fi
-    k -n networking-egress exec "$fault_pod" -c test-gate -- /probe release
+    release_gate "$fault_pod"
     deadline=$((SECONDS+90))
     while ((SECONDS < deadline)); do
       k -n networking-egress get pod "$fault_pod" -o json | jq '{uid:.metadata.uid,status:.status}' > "$artifacts/startup-blocked.json"

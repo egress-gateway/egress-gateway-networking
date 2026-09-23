@@ -121,3 +121,19 @@ verify_recovery() {
   jq -se --arg id "$recovery_id" --argjson count "$count" 'length==$count and all(.[];.id==$id and .success==true)' "$artifacts/$recovery_file" >/dev/null
   recovery_failed=false
 }
+
+release_gate() {
+  local name=$1 result=0
+  k -n networking-egress get pod "$name" -o json |
+    jq '{uid:.metadata.uid,gate:(.status.initContainerStatuses[]|select(.name=="test-gate"))}' > "$artifacts/gate-before.json"
+  jq -e '(.uid|type=="string" and length>0) and (.gate.containerID|type=="string" and length>0) and .gate.state.running!=null' "$artifacts/gate-before.json" >/dev/null
+  # Stopping PID 1 can kill the exec process before its response is delivered.
+  # Only the same container's successful Kubernetes completion proves release.
+  k -n networking-egress exec "$name" -c test-gate -- /probe release > "$artifacts/gate-release.log" 2>&1 || result=$?
+  printf '%s\n' "$result" > "$artifacts/gate-release-exit.txt"
+  case "$result" in 0|137) ;; *) cat "$artifacts/gate-release.log" >&2; return "$result";; esac
+  k -n networking-egress wait pod "$name" '--for=jsonpath={.status.initContainerStatuses[?(@.name=="test-gate")].state.terminated.exitCode}=0' --timeout=15s > "$artifacts/gate-wait.log"
+  k -n networking-egress get pod "$name" -o json |
+    jq '{uid:.metadata.uid,gate:(.status.initContainerStatuses[]|select(.name=="test-gate"))}' > "$artifacts/gate-after.json"
+  jq -e --slurpfile before "$artifacts/gate-before.json" '.uid==$before[0].uid and .gate.containerID==$before[0].gate.containerID and .gate.restartCount==$before[0].gate.restartCount and .gate.state.terminated.exitCode==0 and .gate.state.terminated.reason=="Completed"' "$artifacts/gate-after.json" >/dev/null
+}
