@@ -1,0 +1,31 @@
+name: Network E2E
+on:
+  pull_request:
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  network:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26.7'
+          cache: true
+      - run: sudo apt-get update && sudo apt-get install -y jq gettext-base
+      - run: bash scripts/ci-tools.sh
+      - run: make e2e
+      - name: Upload safe network diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: networking-e2e-${{ github.event.pull_request.head.sha || github.sha }}
+          path: .e2e/artifacts/
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn

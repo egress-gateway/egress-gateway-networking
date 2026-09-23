@@ -1,0 +1,7 @@
+cni:
+  enabled: true
+autoscaleEnabled: false
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
