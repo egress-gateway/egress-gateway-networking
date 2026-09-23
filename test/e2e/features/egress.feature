@@ -3,7 +3,7 @@ Feature: Egress contracts have observable evidence
 
   Scenario Outline: <id> <description>
     When the "<protocol>" probe targets "<target>" from "<client>" during "<phase>"
-    Then the egress contract "<contract>" is evaluated
+    Then the egress contract "<contract>" is evaluated using complete evidence for this case
 
     Examples: Permitted paths
       | id    | description                          | protocol | target   | client   | phase   | contract |

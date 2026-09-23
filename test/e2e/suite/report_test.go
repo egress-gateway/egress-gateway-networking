@@ -28,7 +28,7 @@ func TestInventoryExpandsExamplesAndRejectsDuplicateIDs(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	feature := "Feature: coverage\n Scenario Outline: <id> probe <port>\n  Then the egress contract \"deny\" is evaluated\n Examples:\n  | id | port |\n  | N1-01 | 443 |\n  | N1-02 | 8443 |\n"
+	feature := "Feature: coverage\n Scenario Outline: <id> probe <port>\n  Then the egress contract \"deny\" is evaluated using complete evidence for this case\n Examples:\n  | id | port |\n  | N1-01 | 443 |\n  | N1-02 | 8443 |\n"
 	path := filepath.Join(dir, "test.feature")
 	if err := os.WriteFile(path, []byte(feature), 0o600); err != nil {
 		t.Fatal(err)

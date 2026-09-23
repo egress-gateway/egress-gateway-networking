@@ -55,7 +55,14 @@ func records(path string) ([]probeRecord, error) {
 	return results, scanner.Err()
 }
 
-func evaluateEgress(dir, id, contract string) (string, string, error) {
+type egressInputs struct {
+	Protocol string `json:"protocol"`
+	Target   string `json:"target"`
+	Client   string `json:"client"`
+	Phase    string `json:"phase"`
+}
+
+func evaluateEgress(dir, id, contract string, expected egressInputs) (string, string, error) {
 	for _, part := range []string{"before", "after"} {
 		control, err := records(filepath.Join(dir, "control-"+part+".jsonl"))
 		if err != nil {
@@ -76,10 +83,8 @@ func evaluateEgress(dir, id, contract string) (string, string, error) {
 		return "", "", err
 	}
 	var facts struct {
-		Target         string `json:"target"`
-		Client         string `json:"client"`
-		Protocol       string `json:"protocol"`
-		Phase          string `json:"phase"`
+		egressInputs
+		ID             string `json:"id"`
 		FaultStart     string `json:"fault_start"`
 		FaultEnd       string `json:"fault_end"`
 		SourceIP       string `json:"source_ip"`
@@ -91,16 +96,29 @@ func evaluateEgress(dir, id, contract string) (string, string, error) {
 	if err = json.Unmarshal(data, &facts); err != nil {
 		return "", "", err
 	}
+	if id == "" || facts.ID != id || expected.Protocol == "" || expected.Target == "" || expected.Client == "" || expected.Phase == "" || facts.egressInputs != expected {
+		return ExecutionError, "facts do not identify the current case attempt and requested inputs", nil
+	}
 	if !facts.Restored || !facts.ReceiverStable || !facts.FaultVerified {
 		return ExecutionError, "fault, restoration or receiver identity was not verified", nil
 	}
-	if facts.Phase != "" && facts.Phase != "healthy" && facts.Phase != "untrusted" && contract != "startup" {
+	needsWindow := expected.Phase != "healthy" && expected.Phase != "untrusted"
+	var start, end time.Time
+	if needsWindow {
+		var e1, e2 error
+		start, e1 = time.Parse(time.RFC3339, facts.FaultStart)
+		end, e2 = time.Parse(time.RFC3339, facts.FaultEnd)
+		if e1 != nil || e2 != nil || !end.After(start) {
+			return ExecutionError, "invalid or missing fault observation window", nil
+		}
+	}
+	if needsWindow && contract != "startup" {
 		recovery, err := records(filepath.Join(dir, "recovery.jsonl"))
 		if err != nil {
 			return "", "", err
 		}
-		if len(recovery) < 2 || !recovery[len(recovery)-1].Success || !recovery[len(recovery)-2].Success {
-			return ExecutionError, "authenticated path did not recover", nil
+		if err := validateRecovery(recovery, id+"-recovery", end, 2); err != nil {
+			return ExecutionError, err.Error(), nil
 		}
 		if err := gatewayEvidence(dir, id+"-recovery", "http", recovery); err != nil {
 			return Inconclusive, "recovery: " + err.Error(), nil
@@ -114,8 +132,11 @@ func evaluateEgress(dir, id, contract string) (string, string, error) {
 		if err != nil {
 			return "", "", err
 		}
-		if len(recovered) != 1 || recovered[0].ID != id+"-recovered" || !recovered[0].Success {
-			return ExecutionError, "startup recovery request missing or failed", nil
+		if len(recovered) != 1 {
+			return ExecutionError, "startup recovery must contain exactly one request", nil
+		}
+		if err := validateRecovery(recovered, id+"-recovered", end, 1); err != nil {
+			return ExecutionError, err.Error(), nil
 		}
 		if err := gatewayEvidence(dir, id+"-recovered", "http", recovered); err != nil {
 			return Inconclusive, err.Error(), nil
@@ -146,12 +167,7 @@ func evaluateEgress(dir, id, contract string) (string, string, error) {
 			digests[p.Digest] = true
 		}
 	}
-	if facts.FaultStart != "" {
-		start, e1 := time.Parse(time.RFC3339, facts.FaultStart)
-		end, e2 := time.Parse(time.RFC3339, facts.FaultEnd)
-		if e1 != nil || e2 != nil || !end.After(start) {
-			return ExecutionError, "invalid fault observation window", nil
-		}
+	if needsWindow {
 		during, before := false, false
 		connection := ""
 		for _, p := range probe {
@@ -297,6 +313,25 @@ func evaluateEgress(dir, id, contract string) (string, string, error) {
 	default:
 		return "", "", fmt.Errorf("unknown egress contract %q", contract)
 	}
+}
+
+func validateRecovery(probes []probeRecord, id string, after time.Time, successes int) error {
+	if len(probes) < successes {
+		return errors.New("authenticated path recovery requests missing")
+	}
+	previous := after
+	for _, p := range probes {
+		if p.ID != id || !p.Attempted || p.Protocol != "http" || p.Started.IsZero() || p.Finished.Before(p.Started) || p.Started.Before(previous) {
+			return errors.New("recovery evidence is incomplete, out of order or belongs to another case/window")
+		}
+		previous = p.Finished
+	}
+	for _, p := range probes[len(probes)-successes:] {
+		if !p.Success {
+			return errors.New("authenticated path did not recover")
+		}
+	}
+	return nil
 }
 
 func gatewayEvidence(dir, id, protocol string, probes []probeRecord) error {

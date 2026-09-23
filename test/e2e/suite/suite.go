@@ -44,6 +44,7 @@ func (s *Suite) Run(ctx context.Context) error {
 	var currentCase, observed, reason string
 	var blocked bool
 	var egressPrepared bool
+	var egressExpected egressInputs
 	var caseStarted time.Time
 	scenarios := 0
 	var reportErrors []error
@@ -61,6 +62,7 @@ func (s *Suite) Run(ctx context.Context) error {
 				}
 				currentCase, observed, reason = caseID(scenario.Name), "", ""
 				egressPrepared = false
+				egressExpected = egressInputs{}
 				caseStarted = time.Now()
 				id = strings.ToLower(rand.Text()[:20])
 				dir = filepath.Join(s.Artifacts, currentCase)
@@ -101,13 +103,14 @@ func (s *Suite) Run(ctx context.Context) error {
 				return s.Execute(ctx, "test/e2e/scripts/"+script+".sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
 			}
 			sc.Step(`^the "([^"]+)" probe targets "([^"]+)" from "([^"]+)" during "([^"]+)"$`, func(protocol, target, source, phase string) error {
+				egressExpected = egressInputs{Protocol: protocol, Target: target, Client: source, Phase: phase}
 				err := s.Execute(ctx, "test/e2e/scripts/egress-case.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--protocol", protocol, "--target", target, "--client", source, "--phase", phase, "--defer-cleanup")
 				egressPrepared = err == nil
 				return err
 			})
-			sc.Step(`^the egress contract "([^"]+)" is evaluated$`, func(contract string) error {
+			sc.Step(`^the egress contract "([^"]+)" is evaluated using complete evidence for this case$`, func(contract string) error {
 				var err error
-				observed, reason, err = awaitEvidence(ctx, 10*time.Second, func() (string, string, error) { return evaluateEgress(dir, id, contract) }, func(ctx context.Context) error {
+				observed, reason, err = awaitEvidence(ctx, 10*time.Second, func() (string, string, error) { return evaluateEgress(dir, id, contract, egressExpected) }, func(ctx context.Context) error {
 					return s.Execute(ctx, "test/e2e/scripts/egress-logs.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
 				})
 				return err

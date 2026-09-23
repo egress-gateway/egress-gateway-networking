@@ -12,7 +12,7 @@ func TestMalformedEvidenceCannotPass(t *testing.T) {
 		t.Run(contract, func(t *testing.T) {
 			dir := t.TempDir()
 			files := map[string]string{
-				"facts.json":           `{"source_ip":"10.0.0.1","fault_verified":true,"restored":true,"receiver_stable":true}`,
+				"facts.json":           `{"id":"x","protocol":"http","target":"external","client":"workload","phase":"healthy","source_ip":"10.0.0.1","fault_verified":true,"restored":true,"receiver_stable":true}`,
 				"control-before.jsonl": `{"id":"x-control-before","attempted":true,"success":true}`,
 				"control-after.jsonl":  `{"id":"x-control-after","attempted":true,"success":true}`,
 				"probe.jsonl":          `{"id":"x","attempted":true,"success":false,"local":"10.0.0.1:1"}`,
@@ -29,7 +29,7 @@ func TestMalformedEvidenceCannotPass(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			actual, _, err := evaluateEgress(dir, "x", contract)
+			actual, _, err := evaluateEgress(dir, "x", contract, egressInputs{Protocol: "http", Target: "external", Client: "workload", Phase: "healthy"})
 			if err == nil || !strings.Contains(err.Error(), broken) || actual == Satisfied {
 				t.Fatalf("corrupt evidence accepted: actual=%s err=%v", actual, err)
 			}
@@ -56,23 +56,23 @@ func TestNegativeEvidenceRequiresControlsAndAttribution(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("facts.json", `{"fault_verified":true,"restored":true,"receiver_stable":true}`)
+	write("facts.json", `{"id":"probe","protocol":"udp","target":"external","client":"workload","phase":"healthy","fault_verified":true,"restored":true,"receiver_stable":true}`)
 	write("control-before.jsonl", `{"id":"probe-control-before","attempted":true,"success":true}`)
 	write("control-after.jsonl", `{"id":"probe-control-after","attempted":true,"success":true}`)
 	write("probe.jsonl", `{"id":"unrelated","attempted":true,"success":false}`)
 	write("receiver.log", `{"event":"received","id":"unrelated"}`)
-	status, _, err := evaluateEgress(dir, "probe", "deny")
+	status, _, err := evaluateEgress(dir, "probe", "deny", egressInputs{Protocol: "udp", Target: "external", Client: "workload", Phase: "healthy"})
 	if err != nil || status != Inconclusive {
 		t.Fatalf("unrelated attempt accepted: %s %v", status, err)
 	}
 	write("probe.jsonl", `{"id":"probe","attempted":true,"success":false,"digest":"packet-hash"}`)
 	write("receiver.log", `{"event":"packet","digest":"packet-hash"}`)
-	status, _, err = evaluateEgress(dir, "probe", "deny")
+	status, _, err = evaluateEgress(dir, "probe", "deny", egressInputs{Protocol: "udp", Target: "external", Client: "workload", Phase: "healthy"})
 	if err != nil || status != Violated {
 		t.Fatalf("failed handshake hid delivered packet: %s %v", status, err)
 	}
 	write("control-after.jsonl", `{"id":"probe-control-after","attempted":true,"success":false}`)
-	status, _, err = evaluateEgress(dir, "probe", "deny")
+	status, _, err = evaluateEgress(dir, "probe", "deny", egressInputs{Protocol: "udp", Target: "external", Client: "workload", Phase: "healthy"})
 	if err != nil || status != ExecutionError {
 		t.Fatalf("broken receiver control accepted: %s %v", status, err)
 	}
@@ -81,7 +81,7 @@ func TestNegativeEvidenceRequiresControlsAndAttribution(t *testing.T) {
 func TestTimeoutAndMissingObserverCannotCertifyIsolation(t *testing.T) {
 	dir := t.TempDir()
 	for name, body := range map[string]string{
-		"facts.json":           `{"fault_verified":true,"restored":true,"receiver_stable":true}`,
+		"facts.json":           `{"id":"x","protocol":"http","target":"external","client":"workload","phase":"healthy","fault_verified":true,"restored":true,"receiver_stable":true}`,
 		"control-before.jsonl": `{"id":"x-control-before","attempted":true,"success":true}`,
 		"control-after.jsonl":  `{"id":"x-control-after","attempted":true,"success":true}`,
 		"probe.jsonl":          `{"id":"x","attempted":true,"success":false,"error":"timeout"}`,
@@ -91,14 +91,14 @@ func TestTimeoutAndMissingObserverCannotCertifyIsolation(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	status, _, err := evaluateEgress(dir, "x", "deny")
+	status, _, err := evaluateEgress(dir, "x", "deny", egressInputs{Protocol: "http", Target: "external", Client: "workload", Phase: "healthy"})
 	if err != nil || status != Inconclusive {
 		t.Fatalf("timeout accepted: %s %v", status, err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "packets.jsonl"), []byte("{\"event\":\"capture-ready\"}\n{\"event\":\"capture-complete\"}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	status, _, err = evaluateEgress(dir, "x", "deny")
+	status, _, err = evaluateEgress(dir, "x", "deny", egressInputs{Protocol: "http", Target: "external", Client: "workload", Phase: "healthy"})
 	if err != nil || status != Inconclusive {
 		t.Fatalf("unvalidated observer accepted: %s %v", status, err)
 	}
@@ -112,25 +112,25 @@ func TestDirectAddressRoutedThroughGatewayIsNotABypass(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	write("facts.json", `{"target":"external","client":"workload","protocol":"http","phase":"healthy","fault_verified":true,"restored":true,"receiver_stable":true}`)
+	write("facts.json", `{"id":"x","target":"external","client":"workload","protocol":"http","phase":"healthy","fault_verified":true,"restored":true,"receiver_stable":true}`)
 	write("control-before.jsonl", `{"id":"x-control-before","attempted":true,"success":true}`)
 	write("control-after.jsonl", `{"id":"x-control-after","attempted":true,"success":true}`)
 	write("probe.jsonl", `{"id":"x","attempted":true,"success":true}`)
 	write("receiver.log", `{"event":"received","id":"x"}`)
 	write("workload.log", `{"test_id":"x","upstream_cluster":"outbound|15443||gateway.networking-gateway.svc.cluster.local","upstream_tls":"TLSv1.3","upstream_peer":"spiffe://cluster.local/ns/networking-gateway/sa/gateway","upstream_local":"10.0.0.1:1234"}`)
 	write("gateway.log", `{"test_id":"x","downstream_remote":"10.0.0.1:1234","downstream_tls":"TLSv1.3","downstream_peer":"spiffe://cluster.local/ns/networking-egress/sa/workload"}`)
-	status, _, err := evaluateEgress(dir, "x", "deny")
+	status, _, err := evaluateEgress(dir, "x", "deny", egressInputs{Protocol: "http", Target: "external", Client: "workload", Phase: "healthy"})
 	if err != nil || status != Satisfied {
 		t.Fatalf("legal gateway path called a bypass: %s %v", status, err)
 	}
 	write("receiver.log", "")
-	status, _, err = evaluateEgress(dir, "x", "gateway")
+	status, _, err = evaluateEgress(dir, "x", "gateway", egressInputs{Protocol: "http", Target: "external", Client: "workload", Phase: "healthy"})
 	if err != nil || status != Inconclusive {
 		t.Fatalf("pending receiver logs treated as a terminal verdict: %s %v", status, err)
 	}
 	write("receiver.log", `{"event":"received","id":"x"}`)
 	write("workload.log", `{"test_id":"x","upstream_cluster":"PassthroughCluster"}`)
-	status, _, err = evaluateEgress(dir, "x", "deny")
+	status, _, err = evaluateEgress(dir, "x", "deny", egressInputs{Protocol: "http", Target: "external", Client: "workload", Phase: "healthy"})
 	if err != nil || status != Violated {
 		t.Fatalf("direct delivery hidden: %s %v", status, err)
 	}
@@ -160,7 +160,7 @@ func TestDenialNeedsLosslessCompleteObservationAndNeverIgnoresLateTraffic(t *tes
 			t.Fatal(err)
 		}
 	}
-	write("facts.json", `{"source_ip":"10.0.0.1","fault_verified":true,"restored":true,"receiver_stable":true}`)
+	write("facts.json", `{"id":"x","protocol":"http","target":"external","client":"workload","phase":"healthy","source_ip":"10.0.0.1","fault_verified":true,"restored":true,"receiver_stable":true}`)
 	write("control-before.jsonl", `{"id":"x-control-before","attempted":true,"success":true}`)
 	write("control-after.jsonl", `{"id":"x-control-after","attempted":true,"success":true}`)
 	write("probe.jsonl", `{"id":"x","attempted":true,"local":"10.0.0.1:1","success":false,"started":"2026-01-01T00:00:00Z","finished":"2026-01-01T00:00:02Z"}`)
@@ -176,7 +176,7 @@ func TestDenialNeedsLosslessCompleteObservationAndNeverIgnoresLateTraffic(t *tes
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			write("packets.jsonl", prefix+tc.extra+"\n"+tc.end+"\n")
-			status, _, err := evaluateEgress(dir, "x", "deny")
+			status, _, err := evaluateEgress(dir, "x", "deny", egressInputs{Protocol: "http", Target: "external", Client: "workload", Phase: "healthy"})
 			if err != nil || status != tc.want {
 				t.Fatalf("got %s %v, want %s", status, err, tc.want)
 			}

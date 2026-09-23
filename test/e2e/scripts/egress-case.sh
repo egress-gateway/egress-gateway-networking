@@ -38,7 +38,7 @@ fi
 if [[ "$phase" == untrusted ]]; then extra+=(--untrusted-client); fi
 started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 source_ip=$(k -n "$source_ns" get pod "$source_pod" -o jsonpath='{.status.podIP}')
-fault_verified=true restored=false startup_blocked=false recovery_failed=false
+fault_verified=false restored=false receiver_stable=false startup_blocked=false recovery_failed=false
 fault_start='' fault_end=''
 fault_pod='' stopped_pid='' background='' probe_control='' gateway_replicas='' istiod_replicas='' repair_disabled=false redirect_removed=false
 printf '%s\n' "$test_id" > "$state_dir/fault-active"
@@ -118,6 +118,8 @@ wait_probe() {
   done
   echo 'background probe did not start' >&2; return 1
 }
+# Bound even recreation/startup phases, which may produce no application request.
+if [[ "$phase" != healthy && "$phase" != untrusted ]]; then fault_start=$(stamp); fi
 case "$phase" in
   healthy|untrusted) probe;;
   fresh)
@@ -226,6 +228,8 @@ case "$phase" in
     : > "$artifacts/probe.jsonl";;
   *) echo 'unsupported phase' >&2; exit 2;;
 esac
+fault_verified=true
+if [[ "$phase" != healthy && "$phase" != untrusted && -z "$fault_end" ]]; then fault_end=$(stamp); fi
 if [[ "$phase" != healthy && "$phase" != untrusted ]]; then component_state fault; fi
 restore
 restored=true
@@ -236,9 +240,10 @@ control after
 capture_finish
 snapshot_receiver > "$artifacts/receiver-after.json"
 cmp "$artifacts/receiver-before.json" "$artifacts/receiver-after.json"
+receiver_stable=true
 gateway_pod=$(epod networking-gateway gateway)
 source_pod=$(epod networking-egress "$client")
 if [[ "$phase" == repair || "$phase" == identity-down ]]; then source_pod="$fault_pod"; fi
 jq -n --arg id "$test_id" --arg started "$started" --arg role "$receiver_role" --arg ns "$receiver_ns" --arg pod "$receiver_pod" --arg container "$receiver_container" --arg gateway "$gateway_pod" --arg workload "$source_pod" --arg client "$client" --arg fault "$fault_pod" '{id:$id,started:$started,role:$role,namespace:$ns,pod:$pod,container:$container,gateway:$gateway,workload:$workload,client:$client,fault:$fault}' > "$artifacts/log-context.json"
 "$BASH" "$root/test/e2e/scripts/egress-logs.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id"
-jq -n --arg protocol "$protocol" --arg phase "$phase" --arg target "$target" --arg client "$client" --arg source_ip "$source_ip" --arg fault_start "$fault_start" --arg fault_end "$fault_end" --argjson startup_blocked "$startup_blocked" '{protocol:$protocol,phase:$phase,target:$target,client:$client,fault_start:$fault_start,fault_end:$fault_end,source_ip:$source_ip,startup_blocked:$startup_blocked,fault_verified:true,restored:true,receiver_stable:true}' > "$artifacts/facts.json"
+jq -n --arg id "$test_id" --arg protocol "$protocol" --arg phase "$phase" --arg target "$target" --arg client "$client" --arg source_ip "$source_ip" --arg fault_start "$fault_start" --arg fault_end "$fault_end" --argjson startup_blocked "$startup_blocked" --argjson fault_verified "$fault_verified" --argjson restored "$restored" --argjson receiver_stable "$receiver_stable" '{id:$id,protocol:$protocol,phase:$phase,target:$target,client:$client,fault_start:$fault_start,fault_end:$fault_end,source_ip:$source_ip,startup_blocked:$startup_blocked,fault_verified:$fault_verified,restored:$restored,receiver_stable:$receiver_stable}' > "$artifacts/facts.json"

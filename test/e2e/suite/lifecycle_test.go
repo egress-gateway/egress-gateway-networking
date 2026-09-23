@@ -17,10 +17,10 @@ func TestDeferredCleanupFailureStopsLaterCases(t *testing.T) {
 	feature := `Feature: deferred cleanup
   Scenario: N1-01 incomplete evidence
     When the "udp" probe targets "external" from "workload" during "healthy"
-    Then the egress contract "deny" is evaluated
+    Then the egress contract "deny" is evaluated using complete evidence for this case
   Scenario: N1-02 blocked after cleanup failure
     When the "udp" probe targets "external" from "workload" during "healthy"
-    Then the egress contract "deny" is evaluated
+    Then the egress contract "deny" is evaluated using complete evidence for this case
 `
 	if err := os.WriteFile(filepath.Join(root, "test/e2e/features/cleanup.feature"), []byte(feature), 0600); err != nil {
 		t.Fatal(err)
@@ -65,10 +65,10 @@ func TestInterruptedOrUnrestoredSuiteLeavesRemainingCasesNotRun(t *testing.T) {
 			feature := `Feature: failure accounting
   Scenario: N1-01 first probe
     When the "udp" probe targets "external" from "workload" during "gateway-down"
-    Then the egress contract "deny" is evaluated
+    Then the egress contract "deny" is evaluated using complete evidence for this case
   Scenario: N1-02 later probe
     When the "udp" probe targets "external" from "workload" during "healthy"
-    Then the egress contract "deny" is evaluated
+    Then the egress contract "deny" is evaluated using complete evidence for this case
 `
 			if err := os.WriteFile(filepath.Join(root, "test/e2e/features/failure.feature"), []byte(feature), 0600); err != nil {
 				t.Fatal(err)
