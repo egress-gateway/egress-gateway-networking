@@ -12,13 +12,19 @@ trap cleanup EXIT
 envsubst '${PLAIN_POD} ${CURL_IMAGE}' < "$root/test/e2e/config/plaintext.yaml" | k create -f -
 k -n networking-test wait pod "$PLAIN_POD" --for=condition=Ready --timeout=120s
 k -n networking-test get pod "$PLAIN_POD" -o json | jq -e '([.spec.containers[], .spec.initContainers[]?] | all(.name != "istio-proxy"))' >/dev/null
+k -n networking-test get pod "$PLAIN_POD" -o json | jq '{name:.metadata.name,uid:.metadata.uid,ip:.status.podIP,imageID:.status.containerStatuses[0].imageID}' > "$artifacts/plaintext-client.json"
 k -n networking-test get peerauthentication strict -o json | jq '{mode:.spec.mtls.mode}' > "$artifacts/authentication.json"
 k -n networking-test get pod "$server" -o json | jq '{uid:.metadata.uid, proxy:[.status.containerStatuses[], .status.initContainerStatuses[]?] | map(select(.name == "istio-proxy") | {containerID,restartCount})}' > "$artifacts/server-before.json"
-stats "$server" > "$artifacts/stats-before.json"
+started=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
 rc=0
 k -n networking-test exec "$PLAIN_POD" -c curl -- curl --noproxy '*' --silent --show-error --max-time 10 \
   -H "X-Networking-Test-Id: $test_id" -o /dev/null -w '%{http_code}' \
   http://httpbin.networking-test.svc.cluster.local:8000/headers > "$artifacts/plaintext-code.txt" 2> "$artifacts/plaintext-error.txt" || rc=$?
 printf '%s\n' "$rc" > "$artifacts/plaintext-exit.txt"
-stats "$server" > "$artifacts/stats-after.json"
+source_ip=$(jq -er '.ip' "$artifacts/plaintext-client.json")
+for attempt in {1..15}; do
+  k -n networking-test logs "$server" -c istio-proxy --since-time "$started" > "$artifacts/rejections.log"
+  if jq -Rse --arg ip "$source_ip" 'split("\n") | map(fromjson? | select(.source_ip == $ip and .details == "filter_chain_not_found")) | length > 0' "$artifacts/rejections.log" >/dev/null; then break; fi
+  sleep 1
+done
 k -n networking-test get pod "$server" -o json | jq '{uid:.metadata.uid, proxy:[.status.containerStatuses[], .status.initContainerStatuses[]?] | map(select(.name == "istio-proxy") | {containerID,restartCount})}' > "$artifacts/server-after.json"

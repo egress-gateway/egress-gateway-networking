@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -28,6 +29,8 @@ type access struct {
 	UpstreamPeer   string      `json:"upstream_peer"`
 	DownstreamTLS  string      `json:"downstream_tls"`
 	DownstreamPeer string      `json:"downstream_peer"`
+	SourceIP       string      `json:"source_ip"`
+	Details        string      `json:"details"`
 }
 
 func findAccess(r io.Reader, id string) (access, error) {
@@ -58,36 +61,31 @@ func checkMTLS(client, server access) error {
 	return nil
 }
 
-func checkRejection(code string, rc, before, after int) error {
+func checkRejection(code string, rc int, serverRejected bool) error {
 	if code != "000" || (rc != 52 && rc != 56) {
 		return fmt.Errorf("expected empty/reset connection with no HTTP response, got HTTP %s curl exit %d", code, rc)
 	}
-	if after <= before {
-		return fmt.Errorf("no server TLS filter-chain rejection: before=%d after=%d", before, after)
+	if !serverRejected {
+		return errors.New("no server TLS filter-chain rejection for this client")
 	}
 	return nil
 }
 
-func rejectionCount(path string) (int, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return 0, err
+func findRejection(r io.Reader, ip string) (bool, error) {
+	if _, err := netip.ParseAddr(ip); err != nil {
+		return false, err
 	}
-	var stats struct {
-		Stats []struct {
-			Name  string `json:"name"`
-			Value int    `json:"value"`
-		} `json:"stats"`
-	}
-	if err = json.Unmarshal(data, &stats); err != nil {
-		return 0, err
-	}
-	for _, s := range stats.Stats {
-		if s.Name == "listener.0.0.0.0_15006.downstream_cx_no_filter_chain_match" {
-			return s.Value, nil
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		var a access
+		if json.Unmarshal(scanner.Bytes(), &a) != nil {
+			continue
+		}
+		if a.SourceIP == ip && a.Details == "filter_chain_not_found" && a.Code.String() == "0" && a.DownstreamTLS == "" {
+			return true, nil
 		}
 	}
-	return 0, errors.New("inbound TLS listener rejection counter missing")
+	return false, scanner.Err()
 }
 
 func plaintextEvidence(dir string) error {
@@ -119,11 +117,22 @@ func plaintextEvidence(dir string) error {
 	if auth.Mode != "STRICT" {
 		return errors.New("server policy is not STRICT")
 	}
-	before, err := rejectionCount(filepath.Join(dir, "stats-before.json"))
+	client, err := read("plaintext-client.json")
 	if err != nil {
 		return err
 	}
-	after, err := rejectionCount(filepath.Join(dir, "stats-after.json"))
+	var source struct {
+		IP string `json:"ip"`
+	}
+	if err = json.Unmarshal([]byte(client), &source); err != nil {
+		return err
+	}
+	logs, err := os.Open(filepath.Join(dir, "rejections.log"))
+	if err != nil {
+		return err
+	}
+	defer logs.Close()
+	rejected, err := findRejection(logs, source.IP)
 	if err != nil {
 		return err
 	}
@@ -139,5 +148,5 @@ func plaintextEvidence(dir string) error {
 	if err != nil {
 		return err
 	}
-	return checkRejection(code, rc, before, after)
+	return checkRejection(code, rc, rejected)
 }

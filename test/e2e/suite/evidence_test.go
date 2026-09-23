@@ -50,21 +50,40 @@ func TestAccessEvidenceMustMatchTheRequest(t *testing.T) {
 
 func TestPlaintextRequiresServerRejectionNotJustClientFailure(t *testing.T) {
 	for _, tt := range []struct {
-		name, code        string
-		rc, before, after int
-		ok                bool
+		name, code   string
+		rc           int
+		rejected, ok bool
 	}{
-		{"reset with rejection", "000", 56, 3, 4, true},
-		{"timeout only", "000", 28, 3, 3, false},
-		{"reset without server evidence", "000", 56, 3, 3, false},
-		{"application response", "200", 0, 3, 4, false},
-		{"counter reset", "000", 56, 3, 1, false},
-		{"kubectl failure", "000", 1, 3, 4, false},
+		{"reset with rejection", "000", 56, true, true},
+		{"timeout only", "000", 28, false, false},
+		{"reset without server evidence", "000", 56, false, false},
+		{"application response", "200", 0, true, false},
+		{"kubectl failure", "000", 1, true, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			err := checkRejection(tt.code, tt.rc, tt.before, tt.after)
+			err := checkRejection(tt.code, tt.rc, tt.rejected)
 			if (err == nil) != tt.ok {
 				t.Fatalf("got %v, want accepted=%v", err, tt.ok)
+			}
+		})
+	}
+}
+
+func TestRejectionLogMustIdentifyThisPlaintextClient(t *testing.T) {
+	for _, tt := range []struct {
+		name, line string
+		ok         bool
+	}{
+		{"matched listener rejection", `{"source_ip":"10.244.0.9","code":0,"details":"filter_chain_not_found","downstream_tls":null}`, true},
+		{"another client", `{"source_ip":"10.244.0.10","code":0,"details":"filter_chain_not_found"}`, false},
+		{"HTTP denial", `{"source_ip":"10.244.0.9","code":403,"details":"rbac_access_denied"}`, false},
+		{"unrelated error", `{"source_ip":"10.244.0.9","code":0,"details":"upstream_reset"}`, false},
+		{"unidentified client", `{"source_ip":null,"code":0,"details":"filter_chain_not_found"}`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := findRejection(strings.NewReader(tt.line), "10.244.0.9")
+			if err != nil || got != tt.ok {
+				t.Fatalf("matched=%v err=%v", got, err)
 			}
 		})
 	}

@@ -22,4 +22,3 @@ export no_proxy="$NO_PROXY"
 k() { kubectl --kubeconfig "$state_dir/kubeconfig" --context "kind-$cluster" --request-timeout=30s "$@"; }
 pod() { k -n networking-test get pods -l "app=$1" -o json | jq -er '.items | select(length == 1) | .[0].metadata.name'; }
 need_id() { [[ "$test_id" =~ ^[a-z0-9-]+$ ]] || { echo 'valid --test-id required' >&2; exit 2; }; }
-stats() { k -n networking-test exec "$1" -c istio-proxy -- pilot-agent request GET 'stats?format=json&filter=downstream_cx_no_filter_chain_match'; }

@@ -96,14 +96,15 @@ Four serial Godog scenarios share one environment. Every scenario has its own
 | CNI injection | Ready Istiod/CNI, chained plugin, successful `istio-validation` with `--skip-rule-apply`, no `istio-init` |
 | Transparent HTTP | Application uses no proxy; httpbin echoes the ID; both Envoys log that ID with HTTP 200 |
 | Actual mTLS | Same request has client upstream/server downstream TLS metadata and the expected opposite ServiceAccount SPIFFE identity |
-| Plaintext rejection | No HTTP response and curl reports reset/empty reply; the same server's inbound TLS listener rejection counter increases under STRICT policy |
+| Plaintext rejection | No HTTP response and curl reports reset/empty reply; the same server logs `filter_chain_not_found` for this temporary client's Pod IP under STRICT policy |
 
 For raw plaintext, STRICT's TLS-only inbound listener rejects the connection
-before an HTTP access-log entry can exist. The test therefore compares
-`listener.0.0.0.0_15006.downstream_cx_no_filter_chain_match` around a single probe,
-also checking that the server UID/container/restart count did not change. A
-timeout alone, a changed server, or an HTTP response cannot pass this assertion.
-The suite is serial in a dedicated cluster with no concurrent rejection probes.
+before it can read an HTTP correlation header. The test therefore matches the
+listener rejection log's direct remote address to the temporary client's Pod IP,
+collecting logs only from the probe's start time and checking that the server
+UID/container/restart count did not change. The client stays alive until evidence
+is collected, so its IP cannot be reused during the probe. A timeout alone, a
+changed server, another source address, or an HTTP response cannot pass.
 
 Each run prints a unique `.e2e/artifacts/run-*` path containing JUnit, per-request
 evidence, version inputs, actual runtime image IDs, Pod/events, and bounded
