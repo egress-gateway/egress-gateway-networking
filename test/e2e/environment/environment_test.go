@@ -176,3 +176,62 @@ func TestShellCleanupRefusesNodeIdentityMismatch(t *testing.T) {
 		})
 	}
 }
+
+func TestReceiverCleanupValidatesAllIdentitiesBeforeDeletion(t *testing.T) {
+	root, err := filepath.Abs("../../..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, mismatch := range []string{"id", "mount", "label", "none"} {
+		t.Run(mismatch, func(t *testing.T) {
+			state, bin := t.TempDir(), t.TempDir()
+			write := func(path, body string, mode os.FileMode) {
+				t.Helper()
+				if err := os.WriteFile(path, []byte(body), mode); err != nil {
+					t.Fatal(err)
+				}
+			}
+			write(filepath.Join(state, "environment.json"), `{"cluster":"networking-e2e-unit"}`, 0600)
+			for _, role := range []string{"origin", "quic"} {
+				id, owner, label := role, filepath.Join(state, "owner"), "networking-e2e-unit"
+				if role == "quic" {
+					switch mismatch {
+					case "id":
+						id = "replacement"
+					case "mount":
+						owner = "/unrelated/owner"
+					case "label":
+						label = "unrelated"
+					}
+				}
+				write(filepath.Join(state, role+"-id"), role, 0600)
+				info := []any{map[string]any{"Id": id, "Config": map[string]any{"Labels": map[string]string{"networking.e2e.cluster": label}}, "Mounts": []any{map[string]any{"Source": owner, "Destination": "/owner", "RW": false}}}}
+				data, err := json.Marshal(info)
+				if err != nil {
+					t.Fatal(err)
+				}
+				write(filepath.Join(bin, "networking-e2e-unit-"+role+".json"), string(data), 0600)
+			}
+			write(filepath.Join(bin, "docker"), "#!/bin/sh\ncase \"$1\" in inspect) cat \"$(dirname \"$0\")/$2.json\";; rm) printf '%s\\n' \"$3\" >> \"$(dirname \"$0\")/deleted\";; *) exit 2;; esac\n", 0700)
+			cmd := exec.CommandContext(t.Context(), "bash", filepath.Join(root, "test/e2e/scripts/egress-down.sh"), "--state-dir", state)
+			cmd.Env = append(os.Environ(), "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+			out, err := cmd.CombinedOutput()
+			if mismatch == "none" {
+				if err != nil {
+					t.Fatalf("owned cleanup failed: %s %v", out, err)
+				}
+				data, err := os.ReadFile(filepath.Join(bin, "deleted"))
+				if err != nil || len(strings.Fields(string(data))) != 2 {
+					t.Fatalf("missing owned cleanup: %s %v", data, err)
+				}
+			} else {
+				if err == nil {
+					t.Fatalf("mismatch accepted: %s", out)
+				}
+				if _, err := os.Stat(filepath.Join(bin, "deleted")); !os.IsNotExist(err) {
+					t.Fatal("deleted a receiver before validating all identities")
+				}
+			}
+		})
+	}
+}

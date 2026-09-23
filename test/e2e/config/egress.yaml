@@ -1,0 +1,181 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: networking-egress
+  labels: {istio-injection: enabled}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: networking-gateway
+  labels: {istio-injection: enabled}
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: networking-controls
+  labels: {istio-injection: disabled}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: workload, namespace: networking-egress}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: intruder, namespace: networking-egress}
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata: {name: gateway, namespace: networking-gateway}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: {name: gateway, namespace: networking-gateway}
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: gateway}
+  template:
+    metadata:
+      labels: {app: gateway, istio: networking-egressgateway}
+      annotations: {inject.istio.io/templates: gateway}
+    spec:
+      serviceAccountName: gateway
+      containers:
+        - name: istio-proxy
+          image: ${ISTIO_PROXY_IMAGE}
+          ports:
+            - {name: http-mtls, containerPort: 15443}
+            - {name: tls-mtls, containerPort: 15444}
+          resources:
+            requests: {cpu: 10m, memory: 64Mi}
+        - name: wrong-port-receiver
+          image: ${PROBE_IMAGE}
+          imagePullPolicy: Never
+          args: [serve, --tcp, '19090', --udp, '19090']
+          securityContext: {runAsUser: 10000, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}}
+---
+apiVersion: v1
+kind: Service
+metadata: {name: gateway, namespace: networking-gateway}
+spec:
+  selector: {app: gateway}
+  ports:
+    - {name: http-mtls, port: 15443, targetPort: 15443}
+    - {name: tls-mtls, port: 15444, targetPort: 15444}
+    - {name: wrong-tcp, port: 19090, targetPort: 19090}
+    - {name: wrong-udp, port: 19090, targetPort: 19090, protocol: UDP}
+---
+apiVersion: networking.istio.io/v1
+kind: Gateway
+metadata: {name: egress, namespace: networking-gateway}
+spec:
+  selector: {istio: networking-egressgateway}
+  servers:
+    - port: {number: 15443, name: http-mtls, protocol: HTTPS}
+      hosts: ['*']
+      tls: {mode: ISTIO_MUTUAL}
+    - port: {number: 15444, name: tls-mtls, protocol: TLS}
+      hosts: ['*']
+      tls: {mode: ISTIO_MUTUAL}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata: {name: workload-identity, namespace: networking-gateway}
+spec:
+  selector:
+    matchLabels: {app: gateway}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals: [cluster.local/ns/networking-egress/sa/workload]
+      to:
+        - operation: {ports: ['15443', '15444']}
+---
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata: {name: origin, namespace: networking-egress}
+spec:
+  hosts: [origin.test]
+  addresses: [${ORIGIN_IP}]
+  ports:
+    - {number: 8080, name: http, protocol: HTTP}
+    - {number: 443, name: tls, protocol: TLS}
+  location: MESH_EXTERNAL
+  resolution: STATIC
+  endpoints:
+    - address: ${ORIGIN_IP}
+---
+apiVersion: networking.istio.io/v1
+kind: DestinationRule
+metadata: {name: gateway-mtls, namespace: networking-egress}
+spec:
+  host: gateway.networking-gateway.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+      sni: gateway.networking-gateway.svc.cluster.local
+      subjectAltNames: [spiffe://cluster.local/ns/networking-gateway/sa/gateway]
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata: {name: route-to-gateway, namespace: networking-egress}
+spec:
+  hosts: [origin.test]
+  gateways: [mesh]
+  http:
+    - match:
+        - port: 8080
+      route:
+        - destination: {host: gateway.networking-gateway.svc.cluster.local, port: {number: 15443}}
+  tls:
+    - match:
+        - port: 443
+          sniHosts: [origin.test]
+      route:
+        - destination: {host: gateway.networking-gateway.svc.cluster.local, port: {number: 15444}}
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata: {name: gateway-to-origin, namespace: networking-gateway}
+spec:
+  hosts: ['*']
+  gateways: [egress]
+  http:
+    - match:
+        - port: 15443
+      route:
+        - destination: {host: origin.test, port: {number: 8080}}
+  tcp:
+    - match:
+        - port: 15444
+      route:
+        - destination: {host: origin.test, port: {number: 443}}
+
+---
+# Listener logs provide source-attributed evidence even before HTTP is decoded.
+apiVersion: networking.istio.io/v1alpha3
+kind: EnvoyFilter
+metadata: {name: authentication-evidence, namespace: networking-gateway}
+spec:
+  workloadSelector:
+    labels: {app: gateway}
+  configPatches:
+    - applyTo: LISTENER
+      match:
+        context: GATEWAY
+        listener: {portNumber: 15443}
+      patch:
+        operation: MERGE
+        value:
+          access_log:
+            - name: envoy.access_loggers.stdout
+              typed_config:
+                '@type': type.googleapis.com/envoy.extensions.access_loggers.stream.v3.StdoutAccessLog
+                log_format:
+                  json_format:
+                    source_ip: '%DOWNSTREAM_DIRECT_REMOTE_ADDRESS_WITHOUT_PORT%'
+                    downstream_remote: '%DOWNSTREAM_DIRECT_REMOTE_ADDRESS%'
+                    details: '%RESPONSE_CODE_DETAILS%'
+                    downstream_failure: '%DOWNSTREAM_TRANSPORT_FAILURE_REASON%'

@@ -170,7 +170,7 @@ func (e *Environment) down(ctx context.Context) error {
 
 func (e *Environment) fingerprint() (string, error) {
 	h := sha256.New()
-	for _, dir := range []string{"install", "environments/kind", "test/e2e/config"} {
+	for _, dir := range []string{"install", "environments/kind", "test/e2e/config", "test/e2e/probe", "go.mod", "go.sum"} {
 		err := filepath.WalkDir(filepath.Join(e.Root, dir), func(path string, d fs.DirEntry, err error) error {
 			if errors.Is(err, os.ErrNotExist) {
 				return nil

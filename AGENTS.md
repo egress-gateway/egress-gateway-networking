@@ -14,6 +14,8 @@
   node ownership before access/deletion. Never delete unrelated Docker resources.
 - Keep generated state under `.e2e/state` and safe reports under `.e2e/artifacts`.
   Never commit/upload kubeconfig, Secrets, keys or complete proxy config dumps.
-- PR0 establishes HTTP/mTLS using Istio sidecars and chained CNI. It does not
+- PR0 establishes HTTP/mTLS using Istio sidecars and chained CNI. PR0.5 measures
+  its not-fail-closed baseline; expected violations remain visible in per-case reports.
+  Baseline expectations change only after evidence review, never at runtime. It does not
   provide fail-closed egress or a public Pod enrollment contract. Preserve that
   distinction in tests and documentation; V01-02 stays open after PR0.

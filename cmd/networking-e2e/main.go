@@ -29,7 +29,7 @@ func main() {
 
 func run() (result error) {
 	if len(os.Args) < 2 {
-		return fmt.Errorf("usage: networking-e2e e2e|up|test|down [flags]")
+		return fmt.Errorf("usage: networking-e2e e2e|up|test|down|inventory|summary [flags]")
 	}
 	flags := flag.NewFlagSet(os.Args[1], flag.ContinueOnError)
 	root := flags.String("root", ".", "repository root")
@@ -37,6 +37,8 @@ func run() (result error) {
 	artifacts := flags.String("artifacts", ".e2e/artifacts", "safe diagnostic output parent")
 	cluster := flags.String("cluster", "", "new cluster name (networking-e2e- prefix)")
 	keep := flags.Bool("keep", false, "retain the environment after e2e, including failures")
+	ciOutcomes := flags.String("ci-outcomes", "", "CI setup and network step outcomes for report finalization")
+	acceptance := flags.String("acceptance", "baseline", "baseline or enforce acceptance")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		return err
 	}
@@ -59,6 +61,12 @@ func run() (result error) {
 	if _, err = os.Stat(filepath.Join(*root, "install/versions.env")); err != nil {
 		return fmt.Errorf("invalid repository root: %w", err)
 	}
+	if os.Args[1] == "summary" {
+		return printSummary(*artifacts, *ciOutcomes)
+	}
+	if *acceptance != "baseline" && *acceptance != "enforce" {
+		return fmt.Errorf("unknown acceptance mode %q", *acceptance)
+	}
 	runDir, err := os.MkdirTemp(*artifacts, "run-")
 	if os.IsNotExist(err) {
 		if err = os.MkdirAll(*artifacts, 0o700); err != nil {
@@ -72,7 +80,7 @@ func run() (result error) {
 	fmt.Printf("Evidence: %s\n", runDir)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	ctx, cancel := context.WithTimeout(ctx, 25*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Minute)
 	defer cancel()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -101,6 +109,31 @@ func run() (result error) {
 			result = errors.Join(result, err)
 		}
 	}()
+	var report *suite.Report
+	if os.Args[1] == "e2e" || os.Args[1] == "test" || os.Args[1] == "inventory" {
+		report, err = suite.NewReport(*root, runDir, *acceptance, sha, dirty != "")
+		if err != nil {
+			return err
+		}
+		if err = report.Save(); err != nil {
+			return err
+		}
+		if os.Args[1] == "inventory" {
+			return nil
+		}
+		defer func() {
+			report.Finished = time.Now().UTC()
+			if result != nil {
+				report.RunError = result.Error()
+			}
+			if err := report.Save(); err != nil {
+				result = errors.Join(result, err)
+			}
+			if !report.Accepted() {
+				result = errors.Join(result, errors.New("network acceptance failed; see summary.md"))
+			}
+		}()
+	}
 	execute := func(ctx context.Context, script string, args ...string) error {
 		fmt.Printf("\n> %s\n", script)
 		log, err := os.OpenFile(filepath.Join(runDir, strings.ReplaceAll(script, "/", "_")+".log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
@@ -120,9 +153,53 @@ func run() (result error) {
 		}
 		return nil
 	}
-	s := suite.Suite{Root: *root, State: *state, Artifacts: runDir, Execute: execute}
+	s := suite.Suite{Root: *root, State: *state, Artifacts: runDir, Execute: execute, Report: report}
 	e := environment.Environment{Root: *root, State: *state, Artifacts: runDir, Cluster: *cluster, Keep: *keep, Execute: execute, Test: s.Run}
 	return e.Run(ctx, os.Args[1])
+}
+
+func printSummary(parent, outcomes string) error {
+	files, err := filepath.Glob(filepath.Join(parent, "run-*", "case-results.json"))
+	if err != nil {
+		return err
+	}
+	var latest *suite.Report
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			return err
+		}
+		var r suite.Report
+		if err = json.Unmarshal(data, &r); err != nil {
+			return err
+		}
+		if latest == nil || r.Started.After(latest.Started) {
+			r.Dir = filepath.Dir(file)
+			latest = &r
+		}
+	}
+	if latest == nil {
+		return errors.New("required case report is missing")
+	}
+	if outcomes != "" {
+		if latest.Finished.IsZero() {
+			latest.RunError = "CI execution did not finalize the suite; " + outcomes
+			latest.Finished = time.Now().UTC()
+		}
+		if strings.Contains(outcomes, "failure") || strings.Contains(outcomes, "cancelled") {
+			latest.RunError = strings.TrimSpace(latest.RunError + "; CI phases: " + outcomes)
+		}
+		if err := latest.Save(); err != nil {
+			return err
+		}
+	}
+	if _, err = fmt.Print(latest.Markdown()); err != nil {
+		return err
+	}
+	if !latest.Accepted() {
+		return errors.New("reported network acceptance failed")
+	}
+	return nil
 }
 
 func checkOutputPaths(state, artifacts string) error {
