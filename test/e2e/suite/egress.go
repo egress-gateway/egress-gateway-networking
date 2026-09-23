@@ -2,6 +2,7 @@ package suite
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,11 +41,16 @@ func records(path string) ([]probeRecord, error) {
 	var results []probeRecord
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 4096), 1024*1024)
-	for scanner.Scan() {
-		var p probeRecord
-		if json.Unmarshal(scanner.Bytes(), &p) == nil {
-			results = append(results, p)
+	for lineNumber := 1; scanner.Scan(); lineNumber++ {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 || line[0] != '{' {
+			continue
 		}
+		var p probeRecord
+		if err := json.Unmarshal(line, &p); err != nil {
+			return nil, fmt.Errorf("%s:%d: invalid evidence record: %w", path, lineNumber, err)
+		}
+		results = append(results, p)
 	}
 	return results, scanner.Err()
 }
@@ -193,7 +199,10 @@ func evaluateEgress(dir, id, contract string) (string, string, error) {
 		}
 		packets, err := records(filepath.Join(dir, "packets.jsonl"))
 		if err != nil {
-			return Inconclusive, "receiver packet observation missing", nil
+			if errors.Is(err, os.ErrNotExist) {
+				return Inconclusive, "receiver packet observation missing", nil
+			}
+			return "", "", err
 		}
 
 		// The observer owns a complete case window. User-space read timestamps

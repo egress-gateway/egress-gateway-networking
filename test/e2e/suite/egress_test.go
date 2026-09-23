@@ -3,8 +3,50 @@ package suite
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func TestMalformedEvidenceCannotPass(t *testing.T) {
+	for _, contract := range []string{"allow", "deny"} {
+		t.Run(contract, func(t *testing.T) {
+			dir := t.TempDir()
+			files := map[string]string{
+				"facts.json":           `{"source_ip":"10.0.0.1","fault_verified":true,"restored":true,"receiver_stable":true}`,
+				"control-before.jsonl": `{"id":"x-control-before","attempted":true,"success":true}`,
+				"control-after.jsonl":  `{"id":"x-control-after","attempted":true,"success":true}`,
+				"probe.jsonl":          `{"id":"x","attempted":true,"success":false,"local":"10.0.0.1:1"}`,
+				"receiver.log":         "plain receiver diagnostic\n{\"event\":\"received\",\"id\":\"x-control-before\",\"remote\":\"10.0.0.2:2\"}\n{\"event\":\"received\",\"id\":\"x-control-after\",\"remote\":\"10.0.0.2:3\"}\n",
+				"packets.jsonl":        "{\"event\":\"capture-ready\"}\n{\"event\":\"network-packet\",\"remote\":\"10.0.0.2:2\"}\n{\"event\":\"network-packet\",\"remote\":\"10.0.0.1:1\"\n{\"event\":\"network-packet\",\"remote\":\"10.0.0.2:3\"}\n{\"event\":\"capture-complete\",\"dropped\":0,\"kernel_packets\":3,\"captured\":3}\n",
+			}
+			broken := "packets.jsonl"
+			if contract == "allow" {
+				files["probe.jsonl"] = "{\"id\":\"x\",\"attempted\":true,\"success\":false\n{\"id\":\"x\",\"attempted\":true,\"success\":true}\n"
+				broken = "probe.jsonl"
+			}
+			for name, body := range files {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			actual, _, err := evaluateEgress(dir, "x", contract)
+			if err == nil || !strings.Contains(err.Error(), broken) || actual == Satisfied {
+				t.Fatalf("corrupt evidence accepted: actual=%s err=%v", actual, err)
+			}
+		})
+	}
+}
+
+func TestRecordsAllowPlainReceiverLogs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "receiver.log")
+	if err := os.WriteFile(path, []byte("\nplain log line\n [warning] receiver ready\n  {\"event\":\"received\",\"id\":\"x\"}\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r, err := records(path)
+	if err != nil || len(r) != 1 || r[0].ID != "x" {
+		t.Fatalf("records=%+v err=%v", r, err)
+	}
+}
 
 func TestNegativeEvidenceRequiresControlsAndAttribution(t *testing.T) {
 	dir := t.TempDir()

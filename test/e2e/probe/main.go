@@ -443,8 +443,27 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 		}
 	}()
 	end := time.Now().Add(*duration)
+	controlled := *stopOnInput || *requiredSuccesses > 0
+	probeCtx := ctx
+	if controlled {
+		var cancelProbe context.CancelFunc
+		probeCtx, cancelProbe = context.WithDeadline(ctx, end)
+		defer cancelProbe()
+	}
+	completionError := func() error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if controlled && !time.Now().Before(end) {
+			return fmt.Errorf("probe deadline exceeded before completion condition: %w", context.DeadlineExceeded)
+		}
+		return nil
+	}
 	consecutiveSuccesses := 0
 	finishInput := func(err error) error {
+		if deadlineErr := completionError(); deadlineErr != nil {
+			return deadlineErr
+		}
 		if err != nil {
 			return fmt.Errorf("probe control: %w", err)
 		}
@@ -452,12 +471,15 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 		return nil
 	}
 	for sequence := 0; ; sequence++ {
+		if err := completionError(); err != nil {
+			return err
+		}
 		select {
 		case err := <-stopInput:
 			return finishInput(err)
 		default:
 		}
-		cctx, cancel := context.WithTimeout(ctx, *timeout)
+		cctx, cancel := context.WithTimeout(probeCtx, *timeout)
 		o := observation{ID: *id, Sequence: sequence, Protocol: *protocol, Target: *target, Started: time.Now().UTC(), Attempted: true}
 		err := func() error {
 			if *protocol == "http" || *protocol == "https" || *protocol == "quic" {
@@ -523,7 +545,10 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 			o.Connected = true
 			o.Local = c.LocalAddr().String()
 			o.Remote = c.RemoteAddr().String()
-			_ = c.SetDeadline(time.Now().Add(*timeout))
+			deadline, _ := cctx.Deadline()
+			if err := c.SetDeadline(deadline); err != nil {
+				return err
+			}
 			payload := []byte(*id)
 			if *protocol == "tcp" {
 				payload = append(payload, '\n')
@@ -603,6 +628,9 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 			}
 			return nil
 		}()
+		if deadlineErr := completionError(); deadlineErr != nil {
+			err = deadlineErr
+		}
 		cancel()
 		o.Finished = time.Now().UTC()
 		o.Success = err == nil
@@ -619,20 +647,20 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 			_ = connection.Close()
 			connection = nil
 		}
+		if err := completionError(); err != nil {
+			return err
+		}
 		if *requiredSuccesses > 0 && consecutiveSuccesses >= *requiredSuccesses {
 			return nil
 		}
-		if time.Now().After(end) && (*stopOnInput || *requiredSuccesses > 0) {
-			return errors.New("probe deadline exceeded before completion condition")
-		}
-		if *duration == 0 || time.Now().After(end) {
+		if !controlled && (*duration == 0 || time.Now().After(end)) {
 			return nil
 		}
 		select {
 		case err := <-stopInput:
 			return finishInput(err)
-		case <-ctx.Done():
-			return ctx.Err()
+		case <-probeCtx.Done():
+			return probeCtx.Err()
 		case <-time.After(*interval):
 		}
 	}

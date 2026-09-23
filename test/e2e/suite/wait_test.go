@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -34,6 +35,37 @@ func TestEvidenceWaitPreservesVerdictsAndErrors(t *testing.T) {
 		_, _, err := awaitEvidence(t.Context(), time.Second, func() (string, string, error) { return Inconclusive, "", nil }, func(context.Context) error { return failure })
 		if !errors.Is(err, failure) {
 			t.Fatalf("collector error hidden: %v", err)
+		}
+	})
+}
+
+func TestEvidenceWaitDeadlineDuringCollection(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		got, reason, err := awaitEvidence(t.Context(), time.Second, func() (string, string, error) { return Inconclusive, "missing evidence", nil }, func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() })
+		if err != nil || got != Inconclusive || reason != "missing evidence" {
+			t.Fatalf("got %s, %s, %v", got, reason, err)
+		}
+	})
+}
+
+func TestEvidenceWaitDoesNotStartCollectorAtDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		for range 32 {
+			got, _, err := awaitEvidence(t.Context(), 100*time.Millisecond, func() (string, string, error) { return Inconclusive, "missing evidence", nil }, func(context.Context) error { t.Fatal("collector started at deadline"); return nil })
+			if err != nil || got != Inconclusive {
+				t.Fatalf("got %s, %v", got, err)
+			}
+		}
+	})
+}
+
+func TestEvidenceWaitPreservesParentCancellation(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		_, _, err := awaitEvidence(ctx, time.Second, func() (string, string, error) { return Inconclusive, "missing evidence", nil }, func(context.Context) error { cancel(); return ctx.Err() })
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("parent cancellation hidden: %v", err)
 		}
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"flag"
 	"net"
 	"net/http"
@@ -72,6 +73,97 @@ func TestRecoveryDeadlineCannotPass(t *testing.T) {
 	observations, err := captureRequest(t, "--target", strings.TrimPrefix(s.URL, "http://"), "--id", "deadline", "--duration", "20ms", "--successes", "2", "--interval", "1ms")
 	if err == nil || !strings.Contains(err.Error(), "deadline") || len(observations) == 0 {
 		t.Fatalf("deadline accepted: observations=%+v err=%v", observations, err)
+	}
+}
+
+func TestControlledProbeRejectsLateSuccess(t *testing.T) {
+	for _, protocol := range []string{"http", "udp"} {
+		t.Run(protocol, func(t *testing.T) {
+			var calls atomic.Int32
+			var target string
+			if protocol == "http" {
+				s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if calls.Add(1) == 2 {
+						time.Sleep(150 * time.Millisecond)
+					}
+					_ = json.NewEncoder(w).Encode(map[string]string{"id": "late"})
+				}))
+				defer s.Close()
+				target = strings.TrimPrefix(s.URL, "http://")
+			} else {
+				p, err := net.ListenPacket("udp", "127.0.0.1:0")
+				if err != nil {
+					t.Fatal(err)
+				}
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					buf := make([]byte, 1024)
+					for {
+						n, addr, err := p.ReadFrom(buf)
+						if err != nil {
+							return
+						}
+						if calls.Add(1) == 2 {
+							time.Sleep(150 * time.Millisecond)
+						}
+						_, _ = p.WriteTo(buf[:n], addr)
+					}
+				}()
+				defer func() { _ = p.Close(); <-done }()
+				target = p.LocalAddr().String()
+			}
+			observations, err := captureRequest(t, "--protocol", protocol, "--target", target, "--id", "late", "--duration", "50ms", "--successes", "2", "--timeout", "1s", "--interval", "1ms")
+			if !errors.Is(err, context.DeadlineExceeded) || len(observations) == 0 || observations[len(observations)-1].Success {
+				t.Fatalf("late success accepted: observations=%+v err=%v", observations, err)
+			}
+		})
+	}
+}
+
+func TestControlledProbeDeadlineDuringInterval(t *testing.T) {
+	for _, stopOnInput := range []bool{false, true} {
+		t.Run(map[bool]string{false: "success count", true: "late stdin"}[stopOnInput], func(t *testing.T) {
+			started := make(chan struct{}, 1)
+			s := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				_ = json.NewEncoder(w).Encode(map[string]string{"id": "interval"})
+				select {
+				case started <- struct{}{}:
+				default:
+				}
+			}))
+			defer s.Close()
+			args := []string{"--target", strings.TrimPrefix(s.URL, "http://"), "--id", "interval", "--duration", "50ms", "--interval", "1s"}
+			if stopOnInput {
+				input, output, err := os.Pipe()
+				if err != nil {
+					t.Fatal(err)
+				}
+				previous := os.Stdin
+				os.Stdin = input
+				defer func() { os.Stdin = previous; _ = input.Close(); _ = output.Close() }()
+				done := make(chan struct{})
+				writerCtx, cancelWriter := context.WithCancel(t.Context())
+				go func() {
+					defer close(done)
+					select {
+					case <-started:
+					case <-writerCtx.Done():
+						return
+					}
+					time.Sleep(150 * time.Millisecond)
+					_, _ = output.WriteString("interval\n")
+				}()
+				defer func() { cancelWriter(); <-done }()
+				args = append(args, "--stop-on-stdin")
+			} else {
+				args = append(args, "--successes", "2")
+			}
+			observations, err := captureRequest(t, args...)
+			if !errors.Is(err, context.DeadlineExceeded) || len(observations) != 1 {
+				t.Fatalf("interval deadline accepted: observations=%+v err=%v", observations, err)
+			}
+		})
 	}
 }
 
