@@ -7,6 +7,13 @@ calico_observe_start() {
   drop_address=$address
   if [[ -n "$receiver_pod" ]]; then drop_address="$(k -n "$receiver_ns" get pod "$receiver_pod" -o jsonpath='{.status.podIP}'):${address##*:}"; fi
   jq -n --arg source "$source_ip" --arg original "$address" --arg endpoint "$drop_address" '{source:$source,original_destination:$original,receiver_endpoint:$endpoint}' > "$artifacts/tuple.json"
+  if [[ -n "$receiver_role" ]]; then
+    k -n networking-gateway get pod "$gateway_pod" -o json |
+      jq --arg id "$test_id" --arg destination "$drop_address" '{id:$id,namespace:.metadata.namespace,uid:.metadata.uid,ip:.status.podIP,serviceAccount:.spec.serviceAccountName,destination:$destination}' > "$artifacts/gateway-flow-owner.json"
+    local gateway_ip
+    gateway_ip=$(jq -er .ip "$artifacts/gateway-flow-owner.json")
+    docker exec "$cluster-control-plane" conntrack -L -p tcp --orig-src "$gateway_ip" --orig-dst "${drop_address%:*}" --orig-port-dst "${drop_address##*:}" > "$artifacts/gateway-conntrack-before.txt" 2> "$artifacts/gateway-conntrack-status.txt"
+  fi
   docker exec "$cluster-control-plane" /networking-probe drops --target "$drop_address" --stop-file "/$test_id-drops-stop" > "$artifacts/drops.jsonl" 2> "$artifacts/drops-error.txt" & drop_pid=$!
   local deadline=$((SECONDS+15))
   until jq -se 'any(.[];.event=="drops-ready")' "$artifacts/drops.jsonl" >/dev/null 2>&1; do kill -0 "$drop_pid" || return 1; ((SECONDS<deadline)) || return 1; sleep 0.1; done

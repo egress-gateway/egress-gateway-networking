@@ -281,6 +281,15 @@ func evaluateEgress(dir, id, contract string, expected egressInputs) (string, st
 				if calico && facts.Target == "node" && peerIP(packet.Remote) == facts.SourceIP {
 					continue
 				}
+				if calico {
+					background, err := gatewayBackgroundFlow(dir, id, facts.SourceIP, packet)
+					if err != nil {
+						return Inconclusive, "gateway NAT attribution invalid", err
+					}
+					if background {
+						continue
+					}
+				}
 				return Inconclusive, "unattributed receiver traffic prevents an isolation conclusion", nil
 			}
 		}

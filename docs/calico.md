@@ -83,6 +83,9 @@ use listener acceptance plus attributable netfilter denial, rather than treating
 every captured ingress packet as a delivered connection. Ordinary NP cases use
 the source endpoint's dedicated Calico chain counter delta, source-interface
 emission and complete receiver capture. Connection/NAT tuples are retained.
+Late traffic on an existing gateway connection is excluded only when the owned
+gateway's pre-probe conntrack original/reply tuples identify that exact receiver
+flow. A shared node source IP is insufficient; unknown traffic remains inconclusive.
 
 Faults and original mesh denial cases also use a private read-only
 `skb:kfree_skb` tracepoint observer. `github.com/cilium/ebpf v0.22.0` is a Go loader
