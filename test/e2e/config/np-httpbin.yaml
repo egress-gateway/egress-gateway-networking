@@ -10,8 +10,10 @@ spec:
     - name: httpbin
       image: ${HTTPBIN_IMAGE}
       ports: [{containerPort: 8080}]
-      readinessProbe:
+      startupProbe:
         httpGet: {path: /status/200, port: 8080}
+        periodSeconds: 1
+        failureThreshold: 30
     - name: wrong-port
       image: ${PROBE_IMAGE}
       imagePullPolicy: Never
