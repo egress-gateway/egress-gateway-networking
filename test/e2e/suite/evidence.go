@@ -15,7 +15,7 @@ import (
 const (
 	clientIdentity = "spiffe://cluster.local/ns/networking-test/sa/curl"
 	serverIdentity = "spiffe://cluster.local/ns/networking-test/sa/httpbin"
-	serviceCluster = "outbound|8000||httpbin.networking-test.svc.cluster.local"
+	serviceCluster = "outbound|8000||httpbin.networking-test.svc.cluster.local;"
 )
 
 type access struct {

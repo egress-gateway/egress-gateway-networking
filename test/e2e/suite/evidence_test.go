@@ -6,7 +6,7 @@ import (
 )
 
 func TestMTLSRequiresBothDirectionsAndCorrectIdentities(t *testing.T) {
-	client := access{ID: "request", Code: "200", Method: "GET", Path: "/headers", UpstreamTLS: "TLSv1.3", UpstreamPeer: serverIdentity, Cluster: "outbound|8000||httpbin.networking-test.svc.cluster.local"}
+	client := access{ID: "request", Code: "200", Method: "GET", Path: "/headers", UpstreamTLS: "TLSv1.3", UpstreamPeer: serverIdentity, Cluster: serviceCluster}
 	server := access{ID: "request", Code: "200", Method: "GET", Path: "/headers", DownstreamTLS: "TLSv1.3", DownstreamPeer: clientIdentity}
 	if err := checkMTLS(client, server); err != nil {
 		t.Fatal(err)
