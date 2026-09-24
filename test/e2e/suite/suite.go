@@ -274,12 +274,22 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 	if code != 0 {
 		complete := s.Report != nil
 		if s.Report != nil {
-			for _, c := range s.Report.Results() {
-				if tags == "@np" && !strings.HasPrefix(c.ID, "NP-") {
-					continue
-				}
-				complete = complete && c.Actual != NotRun
+			features, err := suite.RetrieveFeatures()
+			if err != nil {
+				return err
 			}
+			pending := make(map[string]bool)
+			for _, feature := range features {
+				for _, scenario := range feature.Pickles {
+					pending[caseID(scenario.Name)] = true
+				}
+			}
+			for _, c := range s.Report.Results() {
+				if c.Actual != NotRun {
+					delete(pending, c.ID)
+				}
+			}
+			complete = len(pending) == 0
 		}
 		if !complete {
 			return fmt.Errorf("BDD suite exited %d before every case was recorded", code)

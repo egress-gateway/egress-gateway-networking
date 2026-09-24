@@ -95,9 +95,8 @@ other scenarios but is not in this fixture's traffic path.
   Cleanup output and source hashes are retained in the final evidence directory.
   No commit, push, PR, or CI modification was made.
 
-Reports: [Markdown](../.e2e/artifacts/dns-local/run-604945195/summary.md),
-[JSON](../.e2e/artifacts/dns-local/run-604945195/case-results.json),
-[JUnit](../.e2e/artifacts/dns-local/run-604945195/junit.xml).
+Reports were produced locally as `run-604945195` (`summary.md`,
+`case-results.json`, `junit.xml`); they are not committed.
 Each selected case directory contains its queries, observations, controls, and
 fault/recovery evidence. Earlier exploratory runs remain separate; their harness
 errors and incomplete verdicts are not counted as native feature failures.
