@@ -29,7 +29,6 @@ allows only these namespace/Pod/port intersections:
 | Namespace | Pod selector | Protocol and endpoint ports |
 |---|---|---|
 | networking-gateway | app=gateway | TCP 15443, 15444 |
-| kube-system | k8s-app=kube-dns | TCP/UDP 53 |
 | istio-system | app=istiod | TCP 15012 |
 
 The gateway fixture's own outgoing traffic is separate. Httpbin, unrelated Pods,
