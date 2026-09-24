@@ -75,7 +75,7 @@ case "$target" in
     GATEWAY_ENDPOINT=$(k -n networking-gateway get pod "$(epod networking-gateway gateway)" -o jsonpath='{.status.podIP}')
     envsubst '${GATEWAY_ENDPOINT}' < "$root/test/e2e/config/gateway-endpoint.yaml" | k apply -f - >/dev/null
     deadline=$((SECONDS+30))
-    until k -n "$source_ns" exec "$source_pod" -c istio-proxy -- pilot-agent request GET clusters | grep -q 'outbound|15443||gateway-endpoint.test'; do ((SECONDS < deadline)) || exit 1; sleep 0.2; done
+    until k -n "$source_ns" exec "$source_pod" -c istio-proxy -- pilot-agent request GET clusters | grep 'outbound|15443||gateway-endpoint.test' >/dev/null; do ((SECONDS < deadline)) || exit 1; sleep 0.2; done
     ip=$GATEWAY_ENDPOINT port=15443
     httpbin=(--host gateway-endpoint.test)
     if [[ "$protocol" == https ]]; then port=15444; httpbin+=(--server-name origin.test); fi

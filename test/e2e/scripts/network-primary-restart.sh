@@ -10,8 +10,11 @@ old=$(k -n calico-system get pods -l k8s-app=calico-node -o json | jq -er '.item
 k -n calico-system get pod "$old" -o jsonpath='{.metadata.uid}' > "$artifacts/primary-before.uid"
 k -n calico-system delete pod "$old" --wait=true --timeout=60s >/dev/null
 k -n calico-system rollout status daemonset/calico-node --timeout=180s >/dev/null
-k -n calico-system get pods -l k8s-app=calico-node -o json | jq -er '.items|select(length==1)|.[0].metadata.uid' > "$artifacts/primary-after.uid"
-! cmp -s "$artifacts/primary-before.uid" "$artifacts/primary-after.uid"
+k -n calico-system get pods -l k8s-app=calico-node -o json | jq -jer '.items|select(length==1)|.[0].metadata.uid' > "$artifacts/primary-after.uid"
+if cmp -s "$artifacts/primary-before.uid" "$artifacts/primary-after.uid"; then
+  echo 'Calico Pod UID did not change after restart' >&2
+  exit 1
+fi
 deadline=$((SECONDS+30))
 until chain > "$artifacts/chain-after.json" && jq -e '.plugins[0].type=="calico" and ([.plugins[]|select(.type=="istio-cni")]|length)==1' "$artifacts/chain-after.json" >/dev/null; do ((SECONDS<deadline)) || exit 1; sleep 0.2; done
 "$BASH" "$root/test/e2e/scripts/egress-case.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id" --protocol http --target routed --client workload --phase fresh

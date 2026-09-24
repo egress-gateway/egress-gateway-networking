@@ -28,3 +28,35 @@ np_recovery() {
   jq -se 'length>=2 and (.[-2:]|all(.success==true))' "$artifacts/recovery-allow.jsonl" >/dev/null || return 1
   "$BASH" "$root/test/e2e/scripts/network-case.sh" --state-dir "$state_dir" --artifacts "$artifacts/recovery-deny" --test-id "$test_id-recovery-deny" --protocol tcp --target np-wrong --phase healthy
 }
+
+# Stop every startup observer before joining any job so one failure cannot
+# leave the remaining captures running throughout recovery.
+finish_observers() {
+  local i role pid deadline rc=0
+  ((${#jobs[@]} > 0)) || return 0
+  for i in "${!jobs[@]}"; do
+    role=${roles[$i]}
+    if [[ "$role" == receiver ]]; then
+      docker exec "$cluster-origin" /probe capture --port 9001 --stop-file "/$test_id-receiver-stop" --stop || rc=1
+    elif [[ "$role" == sender ]]; then
+      docker exec "$cluster-control-plane" /networking-probe capture --port 9001 --stop-file "/$test_id-sender-stop" --stop || rc=1
+    else
+      docker exec "$cluster-control-plane" /networking-probe drops --target "$address" --stop-file "/$test_id-drops-stop" --stop || rc=1
+    fi
+  done
+  deadline=$((SECONDS+5))
+  for pid in "${jobs[@]}"; do
+    while kill -0 "$pid" 2>/dev/null; do
+      if ((SECONDS>=deadline)); then
+        echo "startup observer did not stop: $pid" >&2
+        kill "$pid" 2>/dev/null || true
+        rc=1
+        break
+      fi
+      sleep 0.1
+    done
+    wait "$pid" || rc=1
+  done
+  jobs=() roles=()
+  return "$rc"
+}

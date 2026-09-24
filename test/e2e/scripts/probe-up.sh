@@ -7,7 +7,8 @@ case "$architecture" in aarch64|arm64) architecture=arm64;; x86_64|amd64) archit
 CGO_ENABLED=0 GOOS=linux GOARCH="$architecture" go build -trimpath -o "$build/probe" "$root/test/e2e/probe"
 go build -trimpath -o "$build/probe-host" "$root/test/e2e/probe"
 "$build/probe-host" pki --dir "$state_dir/certs"
-digest=$(cat "$build/probe" "$root/test/e2e/probe/Dockerfile" | shasum -a 256 | cut -d ' ' -f1)
+if command -v sha256sum >/dev/null 2>&1; then hash=(sha256sum); else hash=(shasum -a 256); fi
+digest=$(cat "$build/probe" "$root/test/e2e/probe/Dockerfile" | "${hash[@]}" | cut -d ' ' -f1)
 export PROBE_IMAGE="networking-probe:${digest:0:20}"
 docker build --tag "$PROBE_IMAGE" --file "$root/test/e2e/probe/Dockerfile" "$build"
 kind load docker-image --name "$cluster" "$PROBE_IMAGE"

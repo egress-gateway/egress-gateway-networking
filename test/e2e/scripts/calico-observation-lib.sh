@@ -6,7 +6,6 @@ calico_observe_start() {
   case "$target" in external|udp443|quic443|same|same-ip|other|other-ip|other-dns|node|wrong) ;; *) return 0;; esac
   drop_address=$address
   if [[ -n "$receiver_pod" ]]; then drop_address="$(k -n "$receiver_ns" get pod "$receiver_pod" -o jsonpath='{.status.podIP}'):${address##*:}"; fi
-  jq -n --arg source "$source_ip" --arg original "$address" --arg endpoint "$drop_address" '{source:$source,original_destination:$original,receiver_endpoint:$endpoint}' > "$artifacts/tuple.json"
   if [[ -n "$receiver_role" ]]; then
     k -n networking-gateway get pod "$gateway_pod" -o json |
       jq --arg id "$test_id" --arg destination "$drop_address" '{id:$id,namespace:.metadata.namespace,uid:.metadata.uid,ip:.status.podIP,serviceAccount:.spec.serviceAccountName,destination:$destination}' > "$artifacts/gateway-flow-owner.json"
@@ -20,6 +19,8 @@ calico_observe_start() {
 }
 calico_observe_finish() {
   if [[ -n "${drop_pid:-}" ]]; then
+    # Startup cases discover their actual probing Pod after observation starts.
+    jq -n --arg source "$source_ip" --arg original "$address" --arg endpoint "$drop_address" '{source:$source,original_destination:$original,receiver_endpoint:$endpoint}' > "$artifacts/tuple.json"
     docker exec "$cluster-control-plane" /networking-probe drops --target "$drop_address" --stop-file "/$test_id-drops-stop" --stop || return 1
     wait "$drop_pid" || return 1
     drop_pid=''

@@ -10,17 +10,6 @@ origin=$(jq -er .origin "$state_dir/egress.json")
 address="$origin:9001"; source_pod="startup-$test_id"; felix_pid=''
 receiver_id=$(receiver_snapshot origin)
 jobs=() roles=()
-finish_observers() {
-  local i role
-  for i in "${!jobs[@]}"; do
-    role=${roles[$i]}
-    if [[ "$role" == receiver ]]; then docker exec "$cluster-origin" /probe capture --port 9001 --stop-file "/$test_id-receiver-stop" --stop
-    elif [[ "$role" == sender ]]; then docker exec "$cluster-control-plane" /networking-probe capture --port 9001 --stop-file "/$test_id-sender-stop" --stop
-    else docker exec "$cluster-control-plane" /networking-probe drops --target "$address" --stop-file "/$test_id-drops-stop" --stop; fi
-    wait "${jobs[$i]}" || return 1
-  done
-  jobs=()
-}
 cleanup_startup() {
   local rc=$?
   finish_observers || rc=1

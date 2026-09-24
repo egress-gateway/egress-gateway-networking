@@ -182,6 +182,17 @@ func TestDenialNeedsLosslessCompleteObservationAndNeverIgnoresLateTraffic(t *tes
 			}
 		})
 	}
+	write("packets.jsonl", prefix+`{"event":"capture-complete","dropped":0,"kernel_packets":2,"captured":2}`+"\n")
+	t.Run("unreadable profile cannot bypass enforcement", func(t *testing.T) {
+		if err := os.Mkdir(filepath.Join(dir, "profile"), 0700); err != nil {
+			t.Fatal(err)
+		}
+		status, _, err := evaluateEgress(dir, "x", "deny", egressInputs{Protocol: "http", Target: "external", Client: "workload", Phase: "healthy"})
+		if err == nil || !strings.Contains(err.Error(), "profile") || status == Satisfied {
+			t.Fatalf("unreadable profile accepted: %s %v", status, err)
+		}
+	})
+
 }
 
 func TestCalicoNodeAcceptedTCPIsDeliveryWithoutApplicationEcho(t *testing.T) {

@@ -24,10 +24,10 @@ func TestEnforcementEvidenceNeedsTheCaseEndpointAndActualDrop(t *testing.T) {
 			case "zero":
 				e.After = e.Before
 			case "reset":
-				e.After = "[0:0] -A cali-fw-test -j DROP\n"
+				e.After = "[0:0] -A cali-fw-cali123 -j DROP\n"
 			case "not-drop":
-				e.Before = "[2:100] -A cali-fw-test -j RETURN\n"
-				e.After = "[3:160] -A cali-fw-test -j RETURN\n"
+				e.Before = "[2:100] -A cali-fw-cali123 -j RETURN\n"
+				e.After = "[3:160] -A cali-fw-cali123 -j RETURN\n"
 			}
 			data, _ := json.Marshal(e)
 			if err := os.WriteFile(filepath.Join(dir, "enforcement.json"), data, 0600); err != nil {

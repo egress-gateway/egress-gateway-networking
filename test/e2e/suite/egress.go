@@ -202,7 +202,10 @@ func evaluateEgress(dir, id, contract string, expected egressInputs) (string, st
 	}
 	switch contract {
 	case "deny":
-		profile, _ := os.ReadFile(filepath.Join(dir, "profile"))
+		profile, err := os.ReadFile(filepath.Join(dir, "profile"))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", "", err
+		}
 		calico := strings.TrimSpace(string(profile)) == "calico-istio"
 		if calico && facts.Target == "node" && facts.SourceIP != "" {
 			for _, p := range receiver {

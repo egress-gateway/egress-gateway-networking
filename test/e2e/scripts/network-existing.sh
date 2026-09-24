@@ -30,7 +30,7 @@ until jq -se '[.[]|select(.attempted and .success)]|length>=2' "$artifacts/probe
 k -n networking-np delete networkpolicy case-allow >/dev/null; policy_added=false
 deadline=$((SECONDS+30))
 until [[ $(docker exec "$cluster-control-plane" iptables-save -t filter | awk -v chain="cali-fw-$interface" '$1=="-A" && $2==chain && /-j cali-po-/ {n++} END{print n}') == 1 ]]; do ((SECONDS<deadline)) || exit 1; sleep 0.1; done
-updated=$(jq -nr 'now as $t | ($t|floor|strftime("%Y-%m-%dT%H:%M:%S")) + "." + (1000000 + (($t-($t|floor))*1000000|floor)|tostring|.[1:]) + "Z"')
+updated=$(node_stamp)
 deadline=$((SECONDS+15))
 until jq -se --arg time "$updated" '[.[]|select(.attempted and .started>$time)]|length>=3' "$artifacts/probe.jsonl" >/dev/null; do kill -0 "$background" || exit 1; ((SECONDS<deadline)) || exit 1; sleep 0.1; done
 printf '%s\n' "$test_id" >&"$channel"; wait "$background"; background=''
