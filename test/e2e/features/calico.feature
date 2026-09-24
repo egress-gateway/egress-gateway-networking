@@ -18,15 +18,15 @@ Feature: Calico keeps the protected network closed across faults
     When the network probe "http" targets "gateway-endpoint" during "healthy"
     Then the network contract "gateway" has attributable packet and enforcement evidence
 
-  @c1-04
-  Scenario: C1-04 DNS endpoint accepts UDP
+  @c5-01
+  Scenario: C5-01 DNS endpoint rejects direct UDP
     When the network probe "dns-udp" targets "dns-endpoint" during "healthy"
-    Then the network contract "allow" has attributable packet and enforcement evidence
+    Then the network contract "deny" has attributable packet and enforcement evidence
 
-  @c1-05
-  Scenario: C1-05 DNS endpoint accepts TCP
+  @c5-02
+  Scenario: C5-02 DNS endpoint rejects direct TCP
     When the network probe "dns-tcp" targets "dns-endpoint" during "healthy"
-    Then the network contract "allow" has attributable packet and enforcement evidence
+    Then the network contract "deny" has attributable packet and enforcement evidence
 
   @c1-06
   Scenario: C1-06 Unselected gateway namespace Pod is blocked

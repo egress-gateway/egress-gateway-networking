@@ -9,9 +9,13 @@ Feature: Egress contracts have observable evidence
       | id    | description                          | protocol | target   | client   | phase   | contract |
       | N4-01 | HTTP uses both authenticated proxies | http     | routed   | workload | healthy | gateway  |
       | N4-02 | HTTPS uses both authenticated proxies| https    | routed   | workload | healthy | gateway  |
+      | N6-01 | Fresh identity and control bootstrap | http     | routed   | workload | fresh   | gateway  |
+
+    @istio-only
+    Examples: Historical recursive DNS allowance
+      | id | description | protocol | target | client | phase | contract |
       | N5-01 | UDP DNS uses the designated resolver | dns-udp  | dns      | workload | healthy | allow    |
       | N5-02 | TCP DNS uses the designated resolver | dns-tcp  | dns      | workload | healthy | allow    |
-      | N6-01 | Fresh identity and control bootstrap | http     | routed   | workload | fresh   | gateway  |
 
     Examples: Forbidden direct destinations and transports
       | id    | description                          | protocol | target   | client   | phase   | contract |

@@ -23,15 +23,17 @@ const (
 )
 
 type CaseResult struct {
-	ID              string  `json:"id"`
-	Name            string  `json:"name"`
-	Requirement     string  `json:"requirement"`
-	Expected        string  `json:"baseline_expected"`
-	Actual          string  `json:"security_result"`
-	Acceptance      string  `json:"acceptance"`
-	Reason          string  `json:"reason,omitempty"`
-	Evidence        string  `json:"evidence,omitempty"`
-	DurationSeconds float64 `json:"duration_seconds"`
+	FunctionalityRequired bool    `json:"functionality_required,omitzero"`
+	Functionality         string  `json:"functionality,omitempty"`
+	ID                    string  `json:"id"`
+	Name                  string  `json:"name"`
+	Requirement           string  `json:"requirement"`
+	Expected              string  `json:"baseline_expected"`
+	Actual                string  `json:"security_result"`
+	Acceptance            string  `json:"acceptance"`
+	Reason                string  `json:"reason,omitempty"`
+	Evidence              string  `json:"evidence,omitempty"`
+	DurationSeconds       float64 `json:"duration_seconds"`
 }
 
 type Report struct {
@@ -110,10 +112,7 @@ func NewProfileReport(root, dir, profile, mode, sha string, dirty bool) (*Report
 			}
 		}
 	}
-	tags := ""
-	if profile == "istio-only" {
-		tags = "~@calico"
-	}
+	tags := profileTags(profile, "")
 	ts := godog.TestSuite{Options: &godog.Options{Paths: []string{filepath.Join(root, "test/e2e/features")}, Tags: tags}}
 	features, err := ts.RetrieveFeatures()
 	if err != nil {
@@ -133,14 +132,18 @@ func NewProfileReport(root, dir, profile, mode, sha string, dirty bool) (*Report
 					requirement, _, _ = strings.Cut(rest, `"`)
 				}
 			}
-			r.Cases = append(r.Cases, CaseResult{ID: id, Name: p.Name, Requirement: requirement, Expected: baseline.Cases[id], Actual: NotRun})
+			required := false
+			for _, tag := range p.Tags {
+				required = required || tag.Name == "@dns-functional"
+			}
+			r.Cases = append(r.Cases, CaseResult{FunctionalityRequired: required, ID: id, Name: p.Name, Requirement: requirement, Expected: baseline.Cases[id], Actual: NotRun})
 		}
 	}
 	if len(r.Cases) == 0 {
 		return nil, errors.New("empty acceptance inventory")
 	}
 	for id := range baseline.Cases {
-		if !ids[id] {
+		if profile == "istio-only" && !ids[id] {
 			return nil, fmt.Errorf("baseline contains removed case %s", id)
 		}
 	}
@@ -148,6 +151,9 @@ func NewProfileReport(root, dir, profile, mode, sha string, dirty bool) (*Report
 }
 
 func (r *Report) CaseAccepted(c CaseResult) bool {
+	if c.FunctionalityRequired && c.Functionality != "satisfied" {
+		return false
+	}
 	if (strings.HasPrefix(c.ID, "P0-") || c.Requirement == "allow" || c.Requirement == "gateway") && c.Actual != Satisfied {
 		return false
 	}
@@ -181,7 +187,7 @@ func (r *Report) Accepted() bool {
 }
 
 func (r *Report) Record(id, actual, reason, evidence string, elapsed time.Duration) error {
-	if actual != Satisfied && actual != Violated && actual != ExecutionError && actual != Inconclusive {
+	if actual != Satisfied && actual != Violated && actual != ExecutionError && actual != Inconclusive && actual != NotRun {
 		return fmt.Errorf("invalid result %q", actual)
 	}
 	for i := range r.Cases {
@@ -189,7 +195,7 @@ func (r *Report) Record(id, actual, reason, evidence string, elapsed time.Durati
 		if c.ID != id {
 			continue
 		}
-		if c.Actual != NotRun {
+		if c.Actual != NotRun || c.Evidence != "" {
 			return fmt.Errorf("duplicate result for %s", id)
 		}
 		c.Actual, c.Reason, c.Evidence = actual, reason, evidence
@@ -280,13 +286,13 @@ func (r *Report) Markdown() string {
 	if r.RunError != "" {
 		fmt.Fprintf(&b, "Run failure: %s\n\n", escape(r.RunError))
 	}
-	b.WriteString("Baseline acceptance does not certify fail-closed egress. IPv6, SCTP and other IP protocols are outside this IPv4 TCP/UDP profile.\n\n| Case / scenario | Security requirement | Actual security result | Baseline expected | Acceptance | Duration | Evidence / reason |\n| --- | --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("Baseline acceptance does not certify fail-closed egress. IPv6, SCTP and other IP protocols are outside this IPv4 TCP/UDP profile.\n\n| Case / scenario | Security requirement | Actual security result | Functionality | Baseline expected | Acceptance | Duration | Evidence / reason |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, c := range r.Cases {
 		mark := "❌ FAIL"
 		if r.CaseAccepted(c) {
 			mark = "✅ PASS"
 		}
-		fmt.Fprintf(&b, "| %s | %s | %s %s | %s | %s | %.3fs | `%s` %s |\n", escape(c.Name), escape(c.Requirement), icon[c.Actual], c.Actual, escape(c.Expected), mark, c.DurationSeconds, escape(c.Evidence), escape(c.Reason))
+		fmt.Fprintf(&b, "| %s | %s | %s %s | %s | %s | %s | %.3fs | `%s` %s |\n", escape(c.Name), escape(c.Requirement), icon[c.Actual], c.Actual, escape(c.Functionality), escape(c.Expected), mark, c.DurationSeconds, escape(c.Evidence), escape(c.Reason))
 	}
 	if len(r.Operations) > 0 {
 		fmt.Fprint(&b, "\n<details><summary>Phase and operation timings</summary>\n\n| Operation | Duration | Error |\n|---|---:|---|\n")
@@ -318,9 +324,12 @@ func (r *Report) junit() []byte {
 		Cases    []item   `xml:"testcase"`
 	}{Name: "networking-" + r.Mode}
 	for _, c := range r.Cases {
-		x := item{Name: c.Name, Class: c.ID, Time: c.DurationSeconds, Output: fmt.Sprintf("security=%s baseline=%s evidence=%s reason=%s", c.Actual, c.Expected, c.Evidence, c.Reason)}
+		x := item{Name: c.Name, Class: c.ID, Time: c.DurationSeconds, Output: fmt.Sprintf("security=%s functionality=%s baseline=%s evidence=%s reason=%s", c.Actual, c.Functionality, c.Expected, c.Evidence, c.Reason)}
 		if !r.CaseAccepted(c) {
 			x.Failure = &failure{Message: c.Actual, Text: x.Output}
+			if c.FunctionalityRequired && c.Functionality != "satisfied" {
+				x.Failure.Message = "functionality not satisfied"
+			}
 			s.Failures++
 		}
 		s.Cases = append(s.Cases, x)
@@ -336,4 +345,20 @@ func (r *Report) junit() []byte {
 	s.Tests = len(s.Cases)
 	data, _ := xml.MarshalIndent(s, "", "  ")
 	return append([]byte(xml.Header), append(data, '\n')...)
+}
+
+// profileTags is shared by inventory and execution, including every OR branch.
+func profileTags(profile, tags string) string {
+	exclude := "~@calico"
+	if profile == "calico-istio" {
+		exclude = "~@istio-only"
+	}
+	if tags == "" {
+		return exclude
+	}
+	clauses := strings.Split(tags, ",")
+	for i := range clauses {
+		clauses[i] = exclude + " && " + clauses[i]
+	}
+	return strings.Join(clauses, ",")
 }

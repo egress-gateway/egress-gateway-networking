@@ -29,3 +29,8 @@ export no_proxy="$NO_PROXY"
 k() { kubectl --kubeconfig "$state_dir/kubeconfig" --context "kind-$cluster" --request-timeout=30s "$@"; }
 pod() { k -n networking-test get pods -l "app=$1" -o json | jq -er '.items | select(length == 1) | .[0].metadata.name'; }
 need_id() { [[ "$test_id" =~ ^[a-z0-9-]+$ ]] || { echo 'valid --test-id required' >&2; exit 2; }; }
+
+# Shared rendering is opt-in for the strict profile's protected Pods.
+protected_pod() {
+  "$BASH" "$root/install/scripts/protected-pod.sh" --kubeconfig "$state_dir/kubeconfig" --context "kind-$cluster"
+}

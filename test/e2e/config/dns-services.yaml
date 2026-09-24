@@ -1,0 +1,35 @@
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata: {name: dns-origin, namespace: networking-dns}
+spec:
+  exportTo: ['.']
+  hosts: [one.origin.test, two.origin.test]
+  ports:
+    - {number: 8080, name: http, protocol: HTTP}
+    - {number: 8443, name: tls, protocol: TLS}
+  location: MESH_EXTERNAL
+  resolution: STATIC
+  endpoints: [{address: '${DNS_RECEIVER_IP}'}]
+---
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata: {name: dns-wildcard, namespace: networking-dns}
+spec:
+  exportTo: ['.']
+  hosts: ['*.wild.origin.test']
+  addresses: [240.240.20.1]
+  ports: [{number: 8080, name: http, protocol: HTTP}]
+  location: MESH_EXTERNAL
+  resolution: STATIC
+  endpoints: [{address: '${DNS_RECEIVER_IP}'}]
+---
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata: {name: dns-tcp, namespace: networking-dns}
+spec:
+  exportTo: ['.']
+  hosts: [tcp.origin.test]
+  ports: [{number: 9000, name: tcp, protocol: TCP}]
+  location: MESH_EXTERNAL
+  resolution: STATIC
+  endpoints: [{address: '${DNS_RECEIVER_IP}'}]

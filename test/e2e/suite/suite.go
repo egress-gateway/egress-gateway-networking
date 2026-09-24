@@ -25,15 +25,7 @@ type Suite struct {
 
 func (s *Suite) Run(ctx context.Context) error {
 	if s.Tags != "" {
-		tags := s.Tags
-		if s.Report != nil && s.Report.Profile == "istio-only" {
-			clauses := strings.Split(tags, ",")
-			for i := range clauses {
-				clauses[i] = "~@calico && " + clauses[i]
-			}
-			tags = strings.Join(clauses, ",")
-		}
-		return s.run(ctx, tags)
+		return s.run(ctx, s.Tags)
 	}
 	if s.Report != nil && s.Report.Profile == "calico-istio" {
 		pendingNP := false
@@ -65,6 +57,9 @@ func (s *Suite) RunPolicy(ctx context.Context) error {
 }
 
 func (s *Suite) run(ctx context.Context, tags string) error {
+	if s.Report != nil {
+		tags = profileTags(s.Report.Profile, tags)
+	}
 	if s.Report != nil {
 		data, err := os.ReadFile(filepath.Join(s.State, "environment.json"))
 		if err != nil {
@@ -147,6 +142,26 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 			operation := func(script string) error {
 				return s.Execute(ctx, "test/e2e/scripts/"+script+".sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
 			}
+			sc.Step(`^the isolated local DNS configuration is ready$`, func() error {
+				return operation("dns-up")
+			})
+			sc.Step(`^the DNS operation "([^"]+)" uses "([^"]+)" and "([^"]+)"$`, func(mode, transport, qtype string) error {
+				networkFault = dnsNeedsRecovery(mode)
+				return s.Execute(ctx, "test/e2e/scripts/dns-case.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--target", mode, "--protocol", transport, "--client", qtype)
+			})
+			sc.Step(`^local DNS functionality and isolation have independently correlated evidence$`, func() error {
+				var functionality string
+				var err error
+				observed, functionality, reason, err = evaluateDNS(dir, id)
+				if s.Report != nil {
+					for i := range s.Report.Cases {
+						if s.Report.Cases[i].ID == currentCase {
+							s.Report.Cases[i].Functionality = functionality
+						}
+					}
+				}
+				return err
+			})
 			sc.Step(`^the network probe "([^"]+)" targets "([^"]+)" during "([^"]+)"$`, func(protocol, target, phase string) error {
 				egressExpected = egressInputs{Protocol: protocol, Target: target, Phase: phase}
 				networkFault = phase != "healthy" && phase != "capture"

@@ -1,3 +1,4 @@
+@pr0
 Feature: Shared Istio CNI connectivity
   Gateway and controller consumers need an independently installed network baseline.
 

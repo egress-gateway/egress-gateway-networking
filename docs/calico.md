@@ -71,9 +71,10 @@ state and artifact directories.
 
 ## Evidence and faults
 
-The original 43 cases remain in the inventory. Eight NP and 22 combined cases
+The original resolver-allow cases N5-01/02 are Istio-only; the other original cases remain applicable. Eight NP and 22 combined cases
 cover address/port intersections, DNS TCP, capture bypass, initial packets beyond
 the actual CNI wait, paused Felix, primary restart, recovery and policy updates.
+The additional [DNS isolation cases](dns-isolation.md) prove per-Pod capture, bootstrap and no DNS egress. Former C1-04/05 allow cases are replaced by C5-01/02 denial cases.
 Each case has independent receiver health controls, stable receiver identity,
 correlated probes and a bounded observation. Node health controls originate from
 an external trusted test receiver, not another workload subject to host denial.
