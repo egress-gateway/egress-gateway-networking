@@ -97,7 +97,7 @@ This logging configuration is not part of the shared defaults.
 
 ## Acceptance evidence
 
-All expanded Godog cases run serially in one environment, including the four PR0 scenarios. Every scenario has its own
+Godog uses one environment. Shared infrastructure faults and the four PR0 scenarios run serially; DNS cases run in four isolated namespace/Pod groups, serial within each group. Every scenario has its own
 `X-Networking-Test-Id`. A temporary unmeshed client is removed after its probe.
 
 | Behavior | Required evidence |

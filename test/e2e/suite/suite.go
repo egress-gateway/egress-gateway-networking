@@ -21,15 +21,16 @@ type Suite struct {
 	Execute                environment.Executor
 	Report                 *Report
 	Tags                   string
+	dnsLane                string
 }
 
 func (s *Suite) Run(ctx context.Context) error {
 	if s.Tags != "" {
-		return s.run(ctx, s.Tags)
+		return s.runGrouped(ctx, s.Tags)
 	}
 	if s.Report != nil && s.Report.Profile == "calico-istio" {
 		pendingNP := false
-		for _, c := range s.Report.Cases {
+		for _, c := range s.Report.Results() {
 			if strings.HasPrefix(c.ID, "NP-") && c.Actual == NotRun {
 				pendingNP = true
 			}
@@ -39,7 +40,7 @@ func (s *Suite) Run(ctx context.Context) error {
 				return err
 			}
 		}
-		return s.run(ctx, "~@np")
+		return s.runGrouped(ctx, "~@np")
 	}
 	return s.run(ctx, "~@calico")
 }
@@ -48,7 +49,7 @@ func (s *Suite) RunPolicy(ctx context.Context) error {
 	if err := s.run(ctx, "@np"); err != nil {
 		return err
 	}
-	for _, c := range s.Report.Cases {
+	for _, c := range s.Report.Results() {
 		if strings.HasPrefix(c.ID, "NP-") && !s.Report.CaseAccepted(c) {
 			return fmt.Errorf("NP acceptance failed: %s: %s", c.ID, c.Reason)
 		}
@@ -71,7 +72,9 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 		if err = json.Unmarshal(data, &receipt); err != nil {
 			return err
 		}
-		s.Report.InputDigest = receipt.Inputs
+		if err := s.Report.Update(func(r *Report) { r.InputDigest = receipt.Inputs }); err != nil {
+			return err
+		}
 		if s.Report.Mode == "baseline" && (s.Report.BaselineInputs == "" || s.Report.BaselineInputs != receipt.Inputs) {
 			return errors.New("reviewed baseline inputs missing or changed; investigate with enforce before explicitly updating expectations")
 		}
@@ -132,7 +135,7 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 					reportErrors = append(reportErrors, err)
 					return ctx, err
 				}
-				for _, c := range s.Report.Cases {
+				for _, c := range s.Report.Results() {
 					if c.ID == currentCase && !s.Report.CaseAccepted(c) {
 						return ctx, fmt.Errorf("%s: security=%s baseline=%s: %s", currentCase, observed, c.Expected, reason)
 					}
@@ -143,7 +146,7 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 				return s.Execute(ctx, "test/e2e/scripts/"+script+".sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
 			}
 			sc.Step(`^the isolated local DNS configuration is ready$`, func() error {
-				return operation("dns-up")
+				return s.Execute(ctx, "test/e2e/scripts/dns-up.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--dns-lane", s.dnsLane)
 			})
 			sc.Step(`^the DNS operation "([^"]+)" uses "([^"]+)" and "([^"]+)"$`, func(mode, transport, qtype string) error {
 				networkFault = dnsNeedsRecovery(mode)
@@ -154,11 +157,13 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 				var err error
 				observed, functionality, reason, err = evaluateDNS(dir, id)
 				if s.Report != nil {
-					for i := range s.Report.Cases {
-						if s.Report.Cases[i].ID == currentCase {
-							s.Report.Cases[i].Functionality = functionality
+					err = errors.Join(err, s.Report.Update(func(r *Report) {
+						for i := range r.Cases {
+							if r.Cases[i].ID == currentCase {
+								r.Cases[i].Functionality = functionality
+							}
 						}
-					}
+					}))
 				}
 				return err
 			})
@@ -254,6 +259,14 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 			sc.Step(`^it receives no HTTP response and the server records a TLS listener rejection$`, func() error { return plaintextEvidence(dir) })
 		},
 	}
+	if s.dnsLane != "" {
+		out, err := s.dnsOutput()
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		suite.Options.Output = out
+	}
 	code := suite.Run()
 	if err := errors.Join(reportErrors...); err != nil {
 		return err
@@ -261,7 +274,7 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 	if code != 0 {
 		complete := s.Report != nil
 		if s.Report != nil {
-			for _, c := range s.Report.Cases {
+			for _, c := range s.Report.Results() {
 				if tags == "@np" && !strings.HasPrefix(c.ID, "NP-") {
 					continue
 				}

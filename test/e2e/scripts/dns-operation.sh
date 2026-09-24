@@ -2,26 +2,33 @@
 # Concrete DNS fixture operations. Go owns ordering, waits, observers and recovery.
 source "$(dirname "$0")/common.sh"
 source "$(dirname "$0")/egress-lib.sh"
+case "$dns_lane" in ''|records|destinations|bypass|lifecycle) ;; *) echo 'invalid DNS lane' >&2; exit 2;; esac
+export DNS_NAMESPACE="networking-dns${dns_lane:+-$dns_lane}"
+dns_state="$state_dir/dns${dns_lane:+-$dns_lane}"
+dns_role="${dns_lane:+dns-$dns_lane}"
+dns_role=${dns_role:-origin}
 need_id
 case "$phase" in
  discover)
-  receiver_snapshot origin > "$artifacts/external-before.json"
-  receiver_owned quic
+  receiver_snapshot "$dns_role" > "$artifacts/external-before.json"
+  external_ip=$(jq -r .origin "$state_dir/egress.json")
+  if [[ -n "$dns_lane" ]]; then external_ip=$(cat "$dns_state/external-ip"); fi
   pods=$(k -n kube-system get pod -l k8s-app=kube-dns -o json)
   endpoints='[]'
   while read -r name ip; do
     pid=$(sandbox_pid kube-system "$name")
     endpoints=$(jq --arg name "$name" --arg ip "$ip" --arg pid "$pid" '.+[{name:$name,ip:$ip,pid:$pid}]' <<< "$endpoints")
   done < <(jq -r '.items|sort_by(.metadata.name)|.[]|[.metadata.name,.status.podIP]|@tsv' <<< "$pods")
-  source_ns=networking-dns source_pod=client
+  source_ns=$DNS_NAMESPACE source_pod=client
   if [[ "$target" == egress-external ]]; then source_ns=networking-egress; source_pod=$(epod "$source_ns" workload); fi
-  jq -n --arg cluster "$cluster" --arg external "$(jq -r .origin "$state_dir/egress.json")" --arg control "$(epod networking-controls control)" --arg service "$(k -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')" --arg ns "$source_ns" --arg pod "$source_pod" --argjson endpoints "$endpoints" '{cluster:$cluster,external:$external,control:$control,service:$service,namespace:$ns,pod:$pod,endpoints:$endpoints}' > "$artifacts/discovery.json"
+  jq -n --arg cluster "$cluster" --arg external "$external_ip" --arg receiver "$cluster-$dns_role" --arg control control --arg controlNS "$DNS_NAMESPACE" --arg service "$(k -n kube-system get svc kube-dns -o jsonpath='{.spec.clusterIP}')" --arg ns "$source_ns" --arg pod "$source_pod" --argjson endpoints "$endpoints" '{cluster:$cluster,external:$external,control:$control,controlNamespace:$controlNS,externalContainer:$receiver,service:$service,namespace:$ns,pod:$pod,endpoints:$endpoints}' > "$artifacts/discovery.json"
   ;;
  create)
   export DNS_CLIENT="dns-$test_id" PROBE_IMAGE ISTIOD_IP
-  PROBE_IMAGE=$(cat "$state_dir/probe-image"); ISTIOD_IP=$(jq -r .istiod "$state_dir/dns/addresses.json")
+  PROBE_IMAGE=$(cat "$state_dir/probe-image"); ISTIOD_IP=$(jq -r .istiod "$dns_state/addresses.json")
   external_ip=$(jq -r .origin "$state_dir/egress.json")
-  envsubst '${DNS_CLIENT} ${PROBE_IMAGE} ${ISTIOD_IP}' < "$root/test/e2e/config/dns-client.yaml" | k create --dry-run=client -f - -o json | protected_pod |
+  if [[ -n "$dns_lane" ]]; then external_ip=$(cat "$dns_state/external-ip"); fi
+  envsubst '${DNS_CLIENT} ${PROBE_IMAGE} ${ISTIOD_IP} ${DNS_NAMESPACE}' < "$root/test/e2e/config/dns-client.yaml" | k create --dry-run=client -f - -o json | protected_pod |
     jq --arg mode "$target" --arg external "$external_ip" '
       if $mode=="capture-off" then .metadata.annotations["proxy.istio.io/config"]="holdApplicationUntilProxyStarts: false\nproxyMetadata:\n  ISTIO_META_DNS_CAPTURE: \"false\"\n"
       elif $mode=="capture-excluded" then .metadata.annotations["traffic.sidecar.istio.io/excludeOutboundPorts"]="53"
@@ -49,7 +56,7 @@ case "$phase" in
   awk 'NF!=2 || $2 !~ /T/ {exit 1} END {if(NR!=2) exit 1}' "$artifacts/stopped.txt"
   ;;
  snapshot)
-  receiver_snapshot origin > "$artifacts/external-after.json"
+  receiver_snapshot "$dns_role" > "$artifacts/external-after.json"
   cmp "$artifacts/external-before.json" "$artifacts/external-after.json"
   ;;
  *) echo 'unknown DNS fixture operation' >&2; exit 2;;

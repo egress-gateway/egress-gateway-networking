@@ -13,8 +13,8 @@ import (
 )
 
 type dnsDiscovery struct {
-	Cluster, External, Control, Service, Namespace, Pod string
-	Endpoints                                           []struct{ Name, IP, PID string }
+	Cluster, External, ExternalContainer, Control, ControlNamespace, Service, Namespace, Pod string
+	Endpoints                                                                                []struct{ Name, IP, PID string }
 }
 type dnsRunner struct {
 	s                                                                                      *Suite
@@ -42,12 +42,13 @@ func (r *dnsRunner) stage(name string, op func() error) (err error) {
 		}
 		r.phases = append(r.phases, p)
 		if r.s.Report != nil && r.caseID != "" {
-			for i := range r.s.Report.Cases {
-				if r.s.Report.Cases[i].ID == r.caseID {
-					r.s.Report.Cases[i].Phases = append([]PhaseTiming{}, r.phases...)
+			err = errors.Join(err, r.s.Report.Update(func(report *Report) {
+				for i := range report.Cases {
+					if report.Cases[i].ID == r.caseID {
+						report.Cases[i].Phases = append([]PhaseTiming{}, r.phases...)
+					}
 				}
-			}
-			err = errors.Join(err, r.s.Report.Save())
+			}))
 		}
 		err = errors.Join(err, r.write("dns-phases.json", r.phases))
 	}()
@@ -58,7 +59,7 @@ func (s *Suite) runDNS(ctx context.Context, dir, id, caseID, mode, transport, qt
 	return r.run(ctx, true)
 }
 func (r *dnsRunner) operation(ctx context.Context, phase, target, client string) error {
-	return r.s.Execute(ctx, "test/e2e/scripts/dns-operation.sh", "--state-dir", r.s.State, "--artifacts", r.dir, "--test-id", r.id, "--phase", phase, "--target", target, "--client", client)
+	return r.s.Execute(ctx, "test/e2e/scripts/dns-operation.sh", "--state-dir", r.s.State, "--artifacts", r.dir, "--test-id", r.id, "--phase", phase, "--target", target, "--client", client, "--dns-lane", r.s.dnsLane)
 }
 func (r *dnsRunner) run(ctx context.Context, recovery bool) (result error) {
 	if err := os.MkdirAll(r.dir, 0700); err != nil {
@@ -93,7 +94,7 @@ func (r *dnsRunner) run(ctx context.Context, recovery bool) (result error) {
 		case "other-suffix":
 			r.question = r.id + ".unregistered.invalid"
 		case "search":
-			r.question = r.id + ".external.test.networking-dns.svc.cluster.local"
+			r.question = r.id + ".external.test." + r.s.dnsNamespace() + ".svc.cluster.local"
 		case "http-one", "https-one", "restart", "recreate", "bootstrap-mapped":
 			r.question = "one.origin.test"
 		case "http-two", "https-two":
@@ -173,10 +174,10 @@ func (r *dnsRunner) run(ctx context.Context, recovery bool) (result error) {
 		if err := r.saveK(ctx, "pod-after.json", "-n", r.ns, "get", "pod", r.pod, "-o", "json"); err != nil {
 			return err
 		}
-		if err := r.saveK(ctx, "receiver.log", "-n", "networking-dns", "logs", "receiver", "--since-time="+r.started); err != nil {
+		if err := r.saveK(ctx, "receiver.log", "-n", r.s.dnsNamespace(), "logs", "receiver", "--since-time="+r.started); err != nil {
 			return err
 		}
-		b, err := r.k(ctx, "-n", "networking-dns", "get", "pod", "receiver", "-o", "json")
+		b, err := r.k(ctx, "-n", r.s.dnsNamespace(), "get", "pod", "receiver", "-o", "json")
 		if err != nil {
 			return err
 		}
@@ -198,7 +199,7 @@ func (r *dnsRunner) run(ctx context.Context, recovery bool) (result error) {
 		if !recovery || !dnsNeedsRecovery(r.mode) {
 			return nil
 		}
-		if err := r.queryFrom(ctx, "networking-dns", "client", "recovery.json", "one.origin.test", r.id+"-recovery", "udp", "A", "", false, 7*time.Second); err != nil {
+		if err := r.queryFrom(ctx, r.s.dnsNamespace(), "client", "recovery.json", "one.origin.test", r.id+"-recovery", "udp", "A", "", false, 7*time.Second); err != nil {
 			return err
 		}
 		if err := r.validVIP("recovery.json"); err != nil {
@@ -231,27 +232,27 @@ func (r *dnsRunner) health(ctx context.Context, part string) error {
 		file := fmt.Sprintf("control-%s-%d.json", part, i)
 		r.facts.Controls = append(r.facts.Controls, file)
 		ops = append(ops, func(ctx context.Context) error {
-			return r.queryFrom(ctx, "networking-controls", r.discovery.Control, file, "kubernetes.default.svc.cluster.local", r.id+"-control", r.transport, "A", e.IP+":53", false, 3*time.Second)
+			return r.queryFrom(ctx, r.discovery.ControlNamespace, r.discovery.Control, file, "kubernetes.default.svc.cluster.local", r.id+"-control", r.transport, "A", e.IP+":53", false, 3*time.Second)
 		})
 	}
 	file := "control-" + part + "-external.json"
 	r.facts.Controls = append(r.facts.Controls, file)
 	ops = append(ops, func(ctx context.Context) error {
-		return r.saveCommand(ctx, file, "docker", "exec", r.discovery.Cluster+"-quic", "/probe", "dns", "--query", r.id+".control.test", "--target", r.discovery.External+":53", "--id", r.id+"-control", "--transport", r.transport, "--timeout", "3s")
+		return r.queryFrom(ctx, r.discovery.ControlNamespace, r.discovery.Control, file, r.id+".control.test", r.id+"-control", r.transport, "A", r.discovery.External+":53", false, 3*time.Second)
 	})
 	if r.app() {
 		ops = append(ops, func(ctx context.Context) error {
 			var a struct{ Receiver string }
-			if err := readDNSJSON(r.s.State, "dns/addresses.json", &a); err != nil {
+			if err := readDNSJSON(r.s.State, r.s.dnsState()+"/addresses.json", &a); err != nil {
 				return err
 			}
 			proto, port := r.appProtocol()
-			return r.saveK(ctx, "app-control-"+part+".json", "-n", "networking-controls", "exec", r.discovery.Control, "-c", "probe", "--", "/probe", "request", "--protocol", proto, "--target", a.Receiver+":"+port, "--server-name", "one.origin.test", "--id", r.id+"-control-app", "--timeout", "3s")
+			return r.saveK(ctx, "app-control-"+part+".json", "-n", r.discovery.ControlNamespace, "exec", r.discovery.Control, "-c", "probe", "--", "/probe", "request", "--protocol", proto, "--target", a.Receiver+":"+port, "--server-name", "one.origin.test", "--id", r.id+"-control-app", "--timeout", "3s")
 		})
 	}
 	if r.forbiddenTCP() {
 		ops = append(ops, func(ctx context.Context) error {
-			return r.saveCommand(ctx, "tcp-control-"+part+".json", "docker", "exec", r.discovery.Cluster+"-quic", "/probe", "request", "--protocol", "tcp", "--target", r.discovery.External+":9000", "--id", r.id+"-control-tcp", "--timeout", "3s")
+			return r.saveK(ctx, "tcp-control-"+part+".json", "-n", r.discovery.ControlNamespace, "exec", r.discovery.Control, "-c", "probe", "--", "/probe", "request", "--protocol", "tcp", "--target", r.discovery.External+":9000", "--id", r.id+"-control-tcp", "--timeout", "3s")
 		})
 	}
 	return dnsParallel(ctx, ops...)
@@ -400,7 +401,7 @@ func (r *dnsRunner) prepareSource(ctx context.Context) error {
 	return r.write("dns-tuples.json", map[string]any{"source": r.source, "service": r.discovery.Service, "endpoints": endpoints, "external": r.discovery.External})
 }
 func (r *dnsRunner) configureName(ctx context.Context, name string, hosts []string) error {
-	b, err := r.k(ctx, "-n", "networking-dns", "get", "serviceentry", "dns-origin", "-o", "json")
+	b, err := r.k(ctx, "-n", r.s.dnsNamespace(), "get", "serviceentry", "dns-origin", "-o", "json")
 	if err != nil {
 		return err
 	}
@@ -410,7 +411,7 @@ func (r *dnsRunner) configureName(ctx context.Context, name string, hosts []stri
 	}
 	delete(v, "status")
 	if name != "dns-origin" {
-		v["metadata"] = map[string]any{"name": name, "namespace": "networking-dns"}
+		v["metadata"] = map[string]any{"name": name, "namespace": r.s.dnsNamespace()}
 	}
 	spec, ok := v["spec"].(map[string]any)
 	if !ok {
@@ -599,14 +600,14 @@ func (r *dnsRunner) restore(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	if r.staleIntent {
-		_, err := r.k(ctx, "-n", "networking-dns", "delete", "serviceentry", "dns-stale", "--ignore-not-found", "--wait=false")
+		_, err := r.k(ctx, "-n", r.s.dnsNamespace(), "delete", "serviceentry", "dns-stale", "--ignore-not-found", "--wait=false")
 		if err == nil {
 			r.staleIntent = false
 		}
 		errs = append(errs, err)
 	}
 	if r.created {
-		_, err := r.k(ctx, "-n", "networking-dns", "delete", "pod", r.pod, "--ignore-not-found", "--wait=true", "--timeout=60s")
+		_, err := r.k(ctx, "-n", r.s.dnsNamespace(), "delete", "pod", r.pod, "--ignore-not-found", "--wait=true", "--timeout=60s")
 		if err == nil {
 			r.created = false
 		}

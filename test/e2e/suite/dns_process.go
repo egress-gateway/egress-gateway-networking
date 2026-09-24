@@ -102,7 +102,7 @@ func (r *dnsRunner) observer(name, kind, address string, port int) *dnsObserver 
 	args := []string{"exec", r.discovery.Cluster + "-control-plane"}
 	switch kind {
 	case "external":
-		args = []string{"exec", r.discovery.Cluster + "-origin", "/probe"}
+		args = []string{"exec", r.discovery.ExternalContainer, "/probe"}
 	case "capture":
 		args = append(args, "nsenter", "-t", address, "-n", "/networking-probe")
 	case "drops":

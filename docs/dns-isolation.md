@@ -75,8 +75,19 @@ fingerprint must be recreated, even when its profile's behavior is unchanged.
 Godog invokes the private Go DNS runner. Go owns observer processes, readiness
 barriers, deadlines, recovery and cancellation. Shell operations only discover
 runtime identities, create the fixture, inspect redirection, suspend a verified
-sidecar or snapshot the receiver. Cases remain serial; independent health checks
-and observer operations within a phase run concurrently and collect every result.
+sidecar or snapshot the receiver. DNS runs in four concurrent groups: records, resolver destinations,
+capture/sidecar faults, and application/lifecycle. Each has its own namespace, client, receiver,
+ServiceEntries, state, recovery target and forbidden external receiver. A separate
+unprotected control Pod in the same namespace verifies receiver health; namespace
+membership does not impose the tested egress restriction. Cases within a group remain serial.
+Node, Calico, gateway and Istiod faults run before the DNS groups, never alongside
+them. `N1-15` retains its original egress workload in the serial phase.
+
+Independent observer operations within a phase run concurrently and collect every
+result. External receiver capture and its health traffic are private to each group, so
+there is no cross-group observation barrier. Source and NAT attribution remain
+mandatory; unaccounted receiver traffic still fails evidence validation.
+Group wall times appear as `dns-group/*` operations; their intervals overlap.
 Receiver/drop observers must be ready before creating a cold Pod or introducing a
 fault; source observers must be ready before the probe. Recovery uses a separate
 correlation and evidence directory with the same Go runner and verdict logic.

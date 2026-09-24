@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/cucumber/godog"
@@ -39,6 +40,7 @@ type CaseResult struct {
 }
 
 type Report struct {
+	mu             sync.Mutex
 	Mode           string            `json:"acceptance_mode"`
 	Profile        string            `json:"profile"`
 	SHA            string            `json:"sha"`
@@ -189,6 +191,8 @@ func (r *Report) Accepted() bool {
 }
 
 func (r *Report) Record(id, actual, reason, evidence string, elapsed time.Duration) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if actual != Satisfied && actual != Violated && actual != ExecutionError && actual != Inconclusive && actual != NotRun {
 		return fmt.Errorf("invalid result %q", actual)
 	}
@@ -202,12 +206,18 @@ func (r *Report) Record(id, actual, reason, evidence string, elapsed time.Durati
 		}
 		c.Actual, c.Reason, c.Evidence = actual, reason, evidence
 		c.DurationSeconds = elapsed.Seconds()
-		return r.Save()
+		return r.save()
 	}
 	return fmt.Errorf("unknown case %s", id)
 }
 
 func (r *Report) Save() error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.save()
+}
+
+func (r *Report) save() error {
 	r.Security = "contract satisfied within tested profile"
 	incomplete, violated := false, false
 	for i := range r.Cases {
@@ -390,4 +400,22 @@ func profileTags(profile, tags string) string {
 		clauses[i] = exclude + " && " + clauses[i]
 	}
 	return strings.Join(clauses, ",")
+}
+
+// Update serializes incremental evidence and its persisted report together.
+func (r *Report) Update(change func(*Report)) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	change(r)
+	return r.save()
+}
+func (r *Report) Results() []CaseResult {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.Cases)
+}
+func (r *Report) AddOperation(op OperationTiming) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.Operations = append(r.Operations, op)
 }

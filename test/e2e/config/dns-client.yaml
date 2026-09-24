@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Pod
 metadata:
   name: ${DNS_CLIENT}
-  namespace: networking-dns
+  namespace: ${DNS_NAMESPACE}
   labels: {app: dns-client, networking.dns/protected: 'true'}
   annotations:
     sidecar.istio.io/inject: 'true'

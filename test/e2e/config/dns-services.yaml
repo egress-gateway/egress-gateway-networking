@@ -1,6 +1,6 @@
 apiVersion: networking.istio.io/v1
 kind: ServiceEntry
-metadata: {name: dns-origin, namespace: networking-dns}
+metadata: {name: dns-origin, namespace: ${DNS_NAMESPACE}}
 spec:
   exportTo: ['.']
   hosts: [one.origin.test, two.origin.test]
@@ -13,7 +13,7 @@ spec:
 ---
 apiVersion: networking.istio.io/v1
 kind: ServiceEntry
-metadata: {name: dns-wildcard, namespace: networking-dns}
+metadata: {name: dns-wildcard, namespace: ${DNS_NAMESPACE}}
 spec:
   exportTo: ['.']
   hosts: ['*.wild.origin.test']
@@ -25,7 +25,7 @@ spec:
 ---
 apiVersion: networking.istio.io/v1
 kind: ServiceEntry
-metadata: {name: dns-tcp, namespace: networking-dns}
+metadata: {name: dns-tcp, namespace: ${DNS_NAMESPACE}}
 spec:
   exportTo: ['.']
   hosts: [tcp.origin.test]

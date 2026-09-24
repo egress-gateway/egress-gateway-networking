@@ -8,7 +8,7 @@ Feature: Sidecar DNS capture and strict egress isolation
     When the DNS operation "<mode>" uses "<transport>" and "<type>"
     Then local DNS functionality and isolation have independently correlated evidence
 
-    @dns-names @dns-functional
+    @dns-names @dns-functional @dns-lane-records
     Examples: names
       | id | description | mode | transport | type |
       | D1-01 | declared names receive local synthetic A over udp | declared | udp | A |
@@ -16,7 +16,7 @@ Feature: Sidecar DNS capture and strict egress isolation
       | D1-03 | wildcard names receive local synthetic A over udp | wildcard | udp | A |
       | D1-04 | wildcard names receive local synthetic A over tcp | wildcard | tcp | A |
 
-    @dns-isolation
+    @dns-isolation @dns-lane-lifecycle
     Examples: undeclared names
       | id | description | mode | transport | type |
       | DS-01 | unregistered names cannot reach external DNS over udp | unregistered | udp | A |
@@ -24,7 +24,7 @@ Feature: Sidecar DNS capture and strict egress isolation
       | DS-03 | other-suffix names cannot reach external DNS over udp | other-suffix | udp | A |
       | DS-04 | other-suffix names cannot reach external DNS over tcp | other-suffix | tcp | A |
 
-    @dns-records
+    @dns-records @dns-lane-records
     Examples: records
       | id | description | mode | transport | type |
       | D2-01 | AAAA over udp cannot retrieve external DNS information | record | udp | AAAA |
@@ -44,13 +44,13 @@ Feature: Sidecar DNS capture and strict egress isolation
       | DS-17 | Search-expanded queries cannot reach external DNS | search | udp | A |
       | DS-18 | EDNS udp queries stay local | edns | udp | A |
 
-    @dns-functional
+    @dns-functional @dns-lane-records
     Examples: EDNS TCP positive control
       | id | description | mode | transport | type |
       | D2-17 | EDNS tcp queries stay local | edns | tcp | A |
 
-    @dns-bypass
-    Examples: bypass
+    @dns-bypass @dns-lane-destinations
+    Examples: resolver destinations
       | id | description | mode | transport | type |
       | D3-01 | service DNS bypass over udp remains isolated | service | udp | A |
       | D3-02 | service DNS bypass over tcp remains isolated | service | tcp | A |
@@ -60,6 +60,10 @@ Feature: Sidecar DNS capture and strict egress isolation
       | D3-06 | external DNS bypass over tcp remains isolated | external | tcp | A |
       | D3-07 | nameserver DNS bypass over udp remains isolated | nameserver | udp | A |
       | D3-08 | nameserver DNS bypass over tcp remains isolated | nameserver | tcp | A |
+
+    @dns-bypass @dns-lane-bypass
+    Examples: capture and sidecar faults
+      | id | description | mode | transport | type |
       | D3-09 | capture-off DNS bypass over udp remains isolated | capture-off | udp | A |
       | D3-10 | capture-off DNS bypass over tcp remains isolated | capture-off | tcp | A |
       | D3-11 | proxy-uid DNS bypass over udp remains isolated | proxy-uid | udp | A |
@@ -73,12 +77,12 @@ Feature: Sidecar DNS capture and strict egress isolation
       | D3-18 | DNS port exclusion over udp remains isolated | capture-excluded | udp | A |
       | D3-19 | DNS port exclusion over tcp remains isolated | capture-excluded | tcp | A |
 
-    @dns-bootstrap @dns-functional
+    @dns-bootstrap @dns-functional @dns-lane-lifecycle
     Examples: bootstrap
       | id | description | mode | transport | type |
       | D4-02 | Trusted discovery names bootstrap without external DNS | bootstrap-mapped | udp | A |
 
-    @dns-application @dns-functional
+    @dns-application @dns-functional @dns-lane-lifecycle
     Examples: application
       | id | description | mode | transport | type |
       | D5-01 | http-one reaches the local Envoy with correlated destination evidence | http-one | udp | A |
@@ -87,7 +91,7 @@ Feature: Sidecar DNS capture and strict egress isolation
       | D5-04 | https-two reaches the local Envoy with correlated destination evidence | https-two | udp | A |
       | D5-05 | raw-tcp reaches the local Envoy with correlated destination evidence | raw-tcp | udp | A |
 
-    @dns-lifecycle @dns-functional
+    @dns-lifecycle @dns-functional @dns-lane-lifecycle
     Examples: lifecycle
       | id | description | mode | transport | type |
       | D6-01 | restart cannot misroute cached synthetic addresses | restart | udp | A |
