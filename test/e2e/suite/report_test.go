@@ -150,3 +150,22 @@ func TestBaselineCannotExemptPermittedPaths(t *testing.T) {
 		}
 	}
 }
+
+func TestPhaseAndSlowestReportsUseWallTimes(t *testing.T) {
+	start := time.Now()
+	r := Report{Started: start, Finished: start.Add(3 * time.Second), Cases: []CaseResult{
+		{ID: "fast", Name: "fast", Actual: Satisfied, DurationSeconds: 1},
+		{ID: "slow", Name: "slow", Actual: Satisfied, DurationSeconds: 2, Phases: []PhaseTiming{{Name: "health-before", Seconds: 0.5}}},
+	}, Operations: []OperationTiming{{Script: "parallel-a", Seconds: 2}, {Script: "parallel-b", Seconds: 2}}}
+	m := r.Markdown()
+	if !strings.Contains(m, "Suite wall time: 3.000s") || !strings.Contains(m, "| slow | health-before | 0.500s") {
+		t.Fatal(m)
+	}
+	slow := strings.Index(m, "Slowest executed cases:")
+	if strings.Index(m[slow:], "| slow |") > strings.Index(m[slow:], "| fast |") {
+		t.Fatal("slowest table not sorted")
+	}
+	if r.Cases[0].ID != "fast" {
+		t.Fatal("rendering reordered inventory")
+	}
+}

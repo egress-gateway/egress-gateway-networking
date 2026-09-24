@@ -147,7 +147,7 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 			})
 			sc.Step(`^the DNS operation "([^"]+)" uses "([^"]+)" and "([^"]+)"$`, func(mode, transport, qtype string) error {
 				networkFault = dnsNeedsRecovery(mode)
-				return s.Execute(ctx, "test/e2e/scripts/dns-case.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--target", mode, "--protocol", transport, "--client", qtype)
+				return s.runDNS(ctx, dir, id, currentCase, mode, transport, qtype)
 			})
 			sc.Step(`^local DNS functionality and isolation have independently correlated evidence$`, func() error {
 				var functionality string
@@ -187,12 +187,25 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 			})
 			sc.Step(`^the "([^"]+)" probe targets "([^"]+)" from "([^"]+)" during "([^"]+)"$`, func(protocol, target, source, phase string) error {
 				egressExpected = egressInputs{Protocol: protocol, Target: target, Client: source, Phase: phase}
+				if s.Report != nil && capturedEgressDNS(s.Report.Profile, egressExpected) {
+					if err := operation("dns-up"); err != nil {
+						return err
+					}
+					return s.runDNS(ctx, dir, id, currentCase, "egress-external", "udp", "A")
+				}
 				err := s.Execute(ctx, "test/e2e/scripts/egress-case.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--protocol", protocol, "--target", target, "--client", source, "--phase", phase, "--defer-cleanup")
 				egressPrepared = err == nil
 				return err
 			})
 			sc.Step(`^the egress contract "([^"]+)" is evaluated using complete evidence for this case$`, func(contract string) error {
 				var err error
+				if s.Report != nil && capturedEgressDNS(s.Report.Profile, egressExpected) {
+					if contract != "deny" {
+						return errors.New("captured external DNS requires the denial contract")
+					}
+					observed, _, reason, err = evaluateDNS(dir, id)
+					return err
+				}
 				observed, reason, err = awaitEvidence(ctx, 10*time.Second, func() (string, string, error) { return evaluateEgress(dir, id, contract, egressExpected) }, func(ctx context.Context) error {
 					return s.Execute(ctx, "test/e2e/scripts/egress-logs.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
 				})

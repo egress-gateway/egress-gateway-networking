@@ -10,6 +10,10 @@ import (
 	"strings"
 )
 
+func capturedEgressDNS(profile string, in egressInputs) bool {
+	return profile == "calico-istio" && in == (egressInputs{Protocol: "dns-udp", Target: "external", Client: "workload", Phase: "healthy"})
+}
+
 type dnsFacts struct {
 	ID            string   `json:"id"`
 	Mode          string   `json:"mode"`
@@ -60,6 +64,14 @@ func evaluateDNS(dir, id string) (actual, functionality, reason string, err erro
 	}
 	if f.ID != id {
 		return ExecutionError, "not_evaluated", "case identity mismatch", errors.New("DNS case identity mismatch")
+	}
+	if f.Mode == "egress-external" {
+		var pod struct {
+			Namespace, Name, UID, IP string
+		}
+		if e := readDNSJSON(dir, "pod-before.json", &pod); e != nil || pod.Namespace != "networking-egress" || !strings.HasPrefix(pod.Name, "workload-") || pod.UID == "" || pod.IP != f.Source {
+			return ExecutionError, "not_evaluated", "captured DNS must originate from the protected egress workload", errors.New("egress DNS source mismatch")
+		}
 	}
 	if f.Dependency != "" {
 		return NotRun, "not_evaluated", f.Dependency, nil

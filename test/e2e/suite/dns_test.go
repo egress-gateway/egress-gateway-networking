@@ -293,3 +293,33 @@ func TestDNSRecoveryRequiresNewIsolationEvidence(t *testing.T) {
 		t.Fatalf("recovery accepted without deny evidence: %s %v", actual, e)
 	}
 }
+
+func TestCapturedEgressDNSRouting(t *testing.T) {
+	input := egressInputs{Protocol: "dns-udp", Target: "external", Client: "workload", Phase: "healthy"}
+	if !capturedEgressDNS("calico-istio", input) || capturedEgressDNS("istio-only", input) {
+		t.Fatal("profile routing changed the baseline")
+	}
+	input.Client = "plain"
+	if capturedEgressDNS("calico-istio", input) {
+		t.Fatal("unmeshed bypass must retain its original evidence path")
+	}
+}
+
+func TestCapturedEgressDNSRequiresOriginalWorkload(t *testing.T) {
+	dir, f := dnsFixture(t)
+	f.Mode = "egress-external"
+	b, _ := json.Marshal(f)
+	if err := os.WriteFile(filepath.Join(dir, "dns-facts.json"), b, 0600); err != nil {
+		t.Fatal(err)
+	}
+	for _, namespace := range []string{"networking-dns", "networking-egress"} {
+		b, _ = json.Marshal(map[string]string{"namespace": namespace, "name": "workload-123", "uid": "pod-123", "ip": f.Source})
+		if err := os.WriteFile(filepath.Join(dir, "pod-before.json"), b, 0600); err != nil {
+			t.Fatal(err)
+		}
+		actual, _, reason, err := evaluateDNS(dir, "case")
+		if (actual == Satisfied) != (namespace == "networking-egress") {
+			t.Fatalf("%s: %s %s %v", namespace, actual, reason, err)
+		}
+	}
+}

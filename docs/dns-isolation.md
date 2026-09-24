@@ -69,3 +69,27 @@ Input fingerprints include shared configuration directories. Validate the
 unchanged Istio-only outcomes before updating its fingerprint; never regenerate
 expected outcomes automatically. A retained environment with a different
 fingerprint must be recreated, even when its profile's behavior is unchanged.
+
+## Test orchestration and timing
+
+Godog invokes the private Go DNS runner. Go owns observer processes, readiness
+barriers, deadlines, recovery and cancellation. Shell operations only discover
+runtime identities, create the fixture, inspect redirection, suspend a verified
+sidecar or snapshot the receiver. Cases remain serial; independent health checks
+and observer operations within a phase run concurrently and collect every result.
+Receiver/drop observers must be ready before creating a cold Pod or introducing a
+fault; source observers must be ready before the probe. Recovery uses a separate
+correlation and evidence directory with the same Go runner and verdict logic.
+
+Reports include each case duration, DNS phase wall times and the slowest cases.
+Concurrent operation durations overlap and must not be added to suite wall time.
+Captured queries retain a seven-second upper bound to include native fallback;
+direct capture/UID bypass and stopped-sidecar queries use a two-second bound.
+Normal answers and ready conditions finish immediately. Short query deadlines
+alone never establish isolation: receiver health, complete observations and
+attributable enforcement remain required.
+
+`N1-15` runs from the original egress workload. In Calico, DNS capture can redirect
+an explicit external-resolver query to the configured fallback resolver, so the
+case observes both the original destination and discovered CoreDNS endpoints.
+It does not substitute the independent DNS client for the egress workload.

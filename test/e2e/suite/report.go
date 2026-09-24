@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -23,17 +24,18 @@ const (
 )
 
 type CaseResult struct {
-	FunctionalityRequired bool    `json:"functionality_required,omitzero"`
-	Functionality         string  `json:"functionality,omitempty"`
-	ID                    string  `json:"id"`
-	Name                  string  `json:"name"`
-	Requirement           string  `json:"requirement"`
-	Expected              string  `json:"baseline_expected"`
-	Actual                string  `json:"security_result"`
-	Acceptance            string  `json:"acceptance"`
-	Reason                string  `json:"reason,omitempty"`
-	Evidence              string  `json:"evidence,omitempty"`
-	DurationSeconds       float64 `json:"duration_seconds"`
+	Phases                []PhaseTiming `json:"phases,omitempty"`
+	FunctionalityRequired bool          `json:"functionality_required,omitzero"`
+	Functionality         string        `json:"functionality,omitempty"`
+	ID                    string        `json:"id"`
+	Name                  string        `json:"name"`
+	Requirement           string        `json:"requirement"`
+	Expected              string        `json:"baseline_expected"`
+	Actual                string        `json:"security_result"`
+	Acceptance            string        `json:"acceptance"`
+	Reason                string        `json:"reason,omitempty"`
+	Evidence              string        `json:"evidence,omitempty"`
+	DurationSeconds       float64       `json:"duration_seconds"`
 }
 
 type Report struct {
@@ -294,6 +296,33 @@ func (r *Report) Markdown() string {
 		}
 		fmt.Fprintf(&b, "| %s | %s | %s %s | %s | %s | %s | %.3fs | `%s` %s |\n", escape(c.Name), escape(c.Requirement), icon[c.Actual], c.Actual, escape(c.Functionality), escape(c.Expected), mark, c.DurationSeconds, escape(c.Evidence), escape(c.Reason))
 	}
+
+	if !r.Finished.IsZero() {
+		fmt.Fprintf(&b, "\nSuite wall time: %.3fs. Parallel operation durations overlap and must not be added to wall time.\n", r.Finished.Sub(r.Started).Seconds())
+	}
+	slow := slices.Clone(r.Cases)
+	slices.SortFunc(slow, func(a, b CaseResult) int {
+		if a.DurationSeconds > b.DurationSeconds {
+			return -1
+		}
+		if a.DurationSeconds < b.DurationSeconds {
+			return 1
+		}
+		return strings.Compare(a.ID, b.ID)
+	})
+	fmt.Fprint(&b, "\nSlowest executed cases:\n\n| Case | Duration |\n|---|---:|\n")
+	for _, c := range slow[:min(10, len(slow))] {
+		if c.Actual != NotRun {
+			fmt.Fprintf(&b, "| %s | %.3fs |\n", escape(c.ID), c.DurationSeconds)
+		}
+	}
+	fmt.Fprint(&b, "\n<details><summary>DNS case phase wall times</summary>\n\n| Case | Phase | Duration | Error |\n|---|---|---:|---|\n")
+	for _, c := range r.Cases {
+		for _, p := range c.Phases {
+			fmt.Fprintf(&b, "| %s | %s | %.3fs | %s |\n", escape(c.ID), escape(p.Name), p.Seconds, escape(p.Error))
+		}
+	}
+	fmt.Fprint(&b, "\n</details>\n")
 	if len(r.Operations) > 0 {
 		fmt.Fprint(&b, "\n<details><summary>Phase and operation timings</summary>\n\n| Operation | Duration | Error |\n|---|---:|---|\n")
 		for _, op := range r.Operations {
