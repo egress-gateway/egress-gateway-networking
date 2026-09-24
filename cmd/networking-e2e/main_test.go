@@ -54,7 +54,7 @@ func TestCIFailureFinalizesCompleteUnexecutedInventory(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.Finished.IsZero() || !strings.Contains(got.RunError, "tools=failure") || got.Cases[0].Actual != suite.NotRun || got.Acceptance != "FAIL" {
-		t.Fatalf("incorrect failure report: %+v", got)
+		t.Fatalf("incorrect failure report: %+v", &got)
 	}
 	for _, name := range []string{"summary.md", "junit.xml"} {
 		b, err := os.ReadFile(filepath.Join(r.Dir, name))

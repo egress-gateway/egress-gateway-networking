@@ -14,12 +14,6 @@ spec:
       ports: [{protocol: TCP, port: 15443}, {protocol: TCP, port: 15444}]
     - to:
         - namespaceSelector:
-            matchLabels: {kubernetes.io/metadata.name: kube-system}
-          podSelector:
-            matchLabels: {k8s-app: kube-dns}
-      ports: [{protocol: TCP, port: 53}, {protocol: UDP, port: 53}]
-    - to:
-        - namespaceSelector:
             matchLabels: {kubernetes.io/metadata.name: istio-system}
           podSelector:
             matchLabels: {app: istiod}

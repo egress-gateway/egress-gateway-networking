@@ -9,9 +9,13 @@ Feature: Egress contracts have observable evidence
       | id    | description                          | protocol | target   | client   | phase   | contract |
       | N4-01 | HTTP uses both authenticated proxies | http     | routed   | workload | healthy | gateway  |
       | N4-02 | HTTPS uses both authenticated proxies| https    | routed   | workload | healthy | gateway  |
+      | N6-01 | Fresh identity and control bootstrap | http     | routed   | workload | fresh   | gateway  |
+
+    @istio-only
+    Examples: Historical recursive DNS allowance
+      | id | description | protocol | target | client | phase | contract |
       | N5-01 | UDP DNS uses the designated resolver | dns-udp  | dns      | workload | healthy | allow    |
       | N5-02 | TCP DNS uses the designated resolver | dns-tcp  | dns      | workload | healthy | allow    |
-      | N6-01 | Fresh identity and control bootstrap | http     | routed   | workload | fresh   | gateway  |
 
     Examples: Forbidden direct destinations and transports
       | id    | description                          | protocol | target   | client   | phase   | contract |
@@ -29,9 +33,13 @@ Feature: Egress contracts have observable evidence
       | N1-12 | Non-443 UDP is denied                | udp      | external | workload | healthy | deny     |
       | N1-13 | Real QUIC on 443 is denied           | quic     | quic443  | workload | healthy | deny     |
       | N1-14 | Real QUIC on non-443 is denied       | quic     | external | workload | healthy | deny     |
-      | N1-15 | DNS to another resolver is denied    | dns-udp  | external | workload | healthy | deny     |
       | N2-01 | Wrong gateway TCP port is denied     | tcp      | wrong    | workload | healthy | deny     |
       | N2-02 | Wrong gateway UDP tuple is denied    | udp      | wrong    | workload | healthy | deny     |
+
+    @dns-egress
+    Examples: Captured DNS to an alternate resolver
+      | id | description | protocol | target | client | phase | contract |
+      | N1-15 | DNS to another resolver is denied    | dns-udp  | external | workload | healthy | deny     |
 
     Examples: Authentication is not replaced by reachability
       | id    | description                          | protocol | target   | client   | phase     | contract |

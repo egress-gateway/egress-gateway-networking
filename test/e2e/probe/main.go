@@ -103,6 +103,9 @@ func run(ctx context.Context, args []string) error {
 	if args[0] == "serve" {
 		return serve(ctx, f, args[1:])
 	}
+	if args[0] == "dns" {
+		return dnsProbe(ctx, f, args[1:])
+	}
 	if args[0] == "request" {
 		return request(ctx, f, args[1:])
 	}
@@ -175,7 +178,11 @@ func serve(ctx context.Context, f *flag.FlagSet, args []string) error {
 		id := r.Header.Get("X-Networking-Test-Id")
 		event("received", r.Proto, id, r.RemoteAddr, "")
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{"id": id, "protocol": r.Proto})
+		sni := ""
+		if r.TLS != nil {
+			sni = r.TLS.ServerName
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"id": id, "protocol": r.Proto, "host": r.Host, "sni": sni})
 	})
 	for _, x := range []struct {
 		port   string

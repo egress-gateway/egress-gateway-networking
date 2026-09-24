@@ -14,7 +14,12 @@ for CLIENT_NAME in workload intruder plain control; do
   CLIENT_NAMESPACE=networking-egress CLIENT_SA=workload INJECT=true PROTECTED=true
   case "$CLIENT_NAME" in intruder) CLIENT_SA=intruder;; plain) INJECT=false;; control) CLIENT_NAMESPACE=networking-controls CLIENT_SA=default INJECT=false PROTECTED=false;; esac
   export CLIENT_NAME CLIENT_NAMESPACE CLIENT_SA INJECT PROTECTED
-  envsubst '${CLIENT_NAME} ${CLIENT_NAMESPACE} ${CLIENT_SA} ${INJECT} ${PROTECTED} ${PROBE_IMAGE}' < "$root/test/e2e/config/egress-client.yaml" | k apply -f -
+  envsubst '${CLIENT_NAME} ${CLIENT_NAMESPACE} ${CLIENT_SA} ${INJECT} ${PROTECTED} ${PROBE_IMAGE}' < "$root/test/e2e/config/egress-client.yaml" | k create --dry-run=client -f - -o json > "$state_dir/client.json"
+  if [[ $(jq -r .profile "$state_dir/environment.json") == calico-istio && "$PROTECTED" == true ]]; then
+    protected_pod < "$state_dir/client.json" | k apply -f -
+  else
+    k apply -f "$state_dir/client.json"
+  fi
 done
 for RECEIVER_NAME in same other node; do
   RECEIVER_NAMESPACE=networking-controls HOST_NETWORK=false RECEIVER_PORT=9000

@@ -21,23 +21,16 @@ type Suite struct {
 	Execute                environment.Executor
 	Report                 *Report
 	Tags                   string
+	dnsLane                string
 }
 
 func (s *Suite) Run(ctx context.Context) error {
 	if s.Tags != "" {
-		tags := s.Tags
-		if s.Report != nil && s.Report.Profile == "istio-only" {
-			clauses := strings.Split(tags, ",")
-			for i := range clauses {
-				clauses[i] = "~@calico && " + clauses[i]
-			}
-			tags = strings.Join(clauses, ",")
-		}
-		return s.run(ctx, tags)
+		return s.runGrouped(ctx, s.Tags)
 	}
 	if s.Report != nil && s.Report.Profile == "calico-istio" {
 		pendingNP := false
-		for _, c := range s.Report.Cases {
+		for _, c := range s.Report.Results() {
 			if strings.HasPrefix(c.ID, "NP-") && c.Actual == NotRun {
 				pendingNP = true
 			}
@@ -47,7 +40,7 @@ func (s *Suite) Run(ctx context.Context) error {
 				return err
 			}
 		}
-		return s.run(ctx, "~@np")
+		return s.runGrouped(ctx, "~@np")
 	}
 	return s.run(ctx, "~@calico")
 }
@@ -56,7 +49,7 @@ func (s *Suite) RunPolicy(ctx context.Context) error {
 	if err := s.run(ctx, "@np"); err != nil {
 		return err
 	}
-	for _, c := range s.Report.Cases {
+	for _, c := range s.Report.Results() {
 		if strings.HasPrefix(c.ID, "NP-") && !s.Report.CaseAccepted(c) {
 			return fmt.Errorf("NP acceptance failed: %s: %s", c.ID, c.Reason)
 		}
@@ -65,6 +58,9 @@ func (s *Suite) RunPolicy(ctx context.Context) error {
 }
 
 func (s *Suite) run(ctx context.Context, tags string) error {
+	if s.Report != nil {
+		tags = profileTags(s.Report.Profile, tags)
+	}
 	if s.Report != nil {
 		data, err := os.ReadFile(filepath.Join(s.State, "environment.json"))
 		if err != nil {
@@ -76,7 +72,9 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 		if err = json.Unmarshal(data, &receipt); err != nil {
 			return err
 		}
-		s.Report.InputDigest = receipt.Inputs
+		if err := s.Report.Update(func(r *Report) { r.InputDigest = receipt.Inputs }); err != nil {
+			return err
+		}
 		if s.Report.Mode == "baseline" && (s.Report.BaselineInputs == "" || s.Report.BaselineInputs != receipt.Inputs) {
 			return errors.New("reviewed baseline inputs missing or changed; investigate with enforce before explicitly updating expectations")
 		}
@@ -137,7 +135,7 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 					reportErrors = append(reportErrors, err)
 					return ctx, err
 				}
-				for _, c := range s.Report.Cases {
+				for _, c := range s.Report.Results() {
 					if c.ID == currentCase && !s.Report.CaseAccepted(c) {
 						return ctx, fmt.Errorf("%s: security=%s baseline=%s: %s", currentCase, observed, c.Expected, reason)
 					}
@@ -147,6 +145,28 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 			operation := func(script string) error {
 				return s.Execute(ctx, "test/e2e/scripts/"+script+".sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
 			}
+			sc.Step(`^the isolated local DNS configuration is ready$`, func() error {
+				return s.Execute(ctx, "test/e2e/scripts/dns-up.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--dns-lane", s.dnsLane)
+			})
+			sc.Step(`^the DNS operation "([^"]+)" uses "([^"]+)" and "([^"]+)"$`, func(mode, transport, qtype string) error {
+				networkFault = dnsNeedsRecovery(mode)
+				return s.runDNS(ctx, dir, id, currentCase, mode, transport, qtype)
+			})
+			sc.Step(`^local DNS functionality and isolation have independently correlated evidence$`, func() error {
+				var functionality string
+				var err error
+				observed, functionality, reason, err = evaluateDNS(dir, id)
+				if s.Report != nil {
+					err = errors.Join(err, s.Report.Update(func(r *Report) {
+						for i := range r.Cases {
+							if r.Cases[i].ID == currentCase {
+								r.Cases[i].Functionality = functionality
+							}
+						}
+					}))
+				}
+				return err
+			})
 			sc.Step(`^the network probe "([^"]+)" targets "([^"]+)" during "([^"]+)"$`, func(protocol, target, phase string) error {
 				egressExpected = egressInputs{Protocol: protocol, Target: target, Phase: phase}
 				networkFault = phase != "healthy" && phase != "capture"
@@ -172,12 +192,25 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 			})
 			sc.Step(`^the "([^"]+)" probe targets "([^"]+)" from "([^"]+)" during "([^"]+)"$`, func(protocol, target, source, phase string) error {
 				egressExpected = egressInputs{Protocol: protocol, Target: target, Client: source, Phase: phase}
+				if s.Report != nil && capturedEgressDNS(s.Report.Profile, egressExpected) {
+					if err := operation("dns-up"); err != nil {
+						return err
+					}
+					return s.runDNS(ctx, dir, id, currentCase, "egress-external", "udp", "A")
+				}
 				err := s.Execute(ctx, "test/e2e/scripts/egress-case.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--protocol", protocol, "--target", target, "--client", source, "--phase", phase, "--defer-cleanup")
 				egressPrepared = err == nil
 				return err
 			})
 			sc.Step(`^the egress contract "([^"]+)" is evaluated using complete evidence for this case$`, func(contract string) error {
 				var err error
+				if s.Report != nil && capturedEgressDNS(s.Report.Profile, egressExpected) {
+					if contract != "deny" {
+						return errors.New("captured external DNS requires the denial contract")
+					}
+					observed, _, reason, err = evaluateDNS(dir, id)
+					return err
+				}
 				observed, reason, err = awaitEvidence(ctx, 10*time.Second, func() (string, string, error) { return evaluateEgress(dir, id, contract, egressExpected) }, func(ctx context.Context) error {
 					return s.Execute(ctx, "test/e2e/scripts/egress-logs.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
 				})
@@ -226,6 +259,14 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 			sc.Step(`^it receives no HTTP response and the server records a TLS listener rejection$`, func() error { return plaintextEvidence(dir) })
 		},
 	}
+	if s.dnsLane != "" {
+		out, err := s.dnsOutput()
+		if err != nil {
+			return err
+		}
+		defer out.Close()
+		suite.Options.Output = out
+	}
 	code := suite.Run()
 	if err := errors.Join(reportErrors...); err != nil {
 		return err
@@ -233,12 +274,22 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 	if code != 0 {
 		complete := s.Report != nil
 		if s.Report != nil {
-			for _, c := range s.Report.Cases {
-				if tags == "@np" && !strings.HasPrefix(c.ID, "NP-") {
-					continue
-				}
-				complete = complete && c.Actual != NotRun
+			features, err := suite.RetrieveFeatures()
+			if err != nil {
+				return err
 			}
+			pending := make(map[string]bool)
+			for _, feature := range features {
+				for _, scenario := range feature.Pickles {
+					pending[caseID(scenario.Name)] = true
+				}
+			}
+			for _, c := range s.Report.Results() {
+				if c.Actual != NotRun {
+					delete(pending, c.ID)
+				}
+			}
+			complete = len(pending) == 0
 		}
 		if !complete {
 			return fmt.Errorf("BDD suite exited %d before every case was recorded", code)

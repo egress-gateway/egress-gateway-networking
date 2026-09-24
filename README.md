@@ -97,7 +97,7 @@ This logging configuration is not part of the shared defaults.
 
 ## Acceptance evidence
 
-All expanded Godog cases run serially in one environment, including the four PR0 scenarios. Every scenario has its own
+Godog uses one environment. Shared infrastructure faults and the four PR0 scenarios run serially; DNS cases run in four isolated namespace/Pod groups, serial within each group. Every scenario has its own
 `X-Networking-Test-Id`. A temporary unmeshed client is removed after its probe.
 
 | Behavior | Required evidence |
@@ -124,7 +124,7 @@ unmeshed control verifies receiver health before and after each observation.
 
 The private image is built from this module and loaded into kind. `quic-go
 v0.63.0` performs real HTTP/3; QUIC cases on 443 and 8443 cannot fall back to TCP.
-UDP is forbidden except the designated DNS resolver; TCP DNS is also exercised.
+In the historical Istio-only contract UDP is forbidden except the designated DNS resolver. The strict Calico profile removes that exception; see [DNS isolation](docs/dns-isolation.md).
 Fault scripts affect only verified, owned fixtures and retain the primary CNI.
 A failed restoration prevents subsequent cases from running.
 
@@ -217,11 +217,11 @@ inventory deliberately uses representative combinations, not a Cartesian product
 | N2: disallowed tuple | N2-01–02 | Allowed gateway address with wrong TCP port or UDP tuple |
 | N3: invalid authentication | N3-01–05 | Plaintext, missing/untrusted client certificate, wrong workload and gateway identities |
 | N4: business path and startup gate | N4-01–02, N4-10–12 | HTTP/HTTPS through both proxies; existing stream during control-plane loss; validation/repair and unavailable new identity |
-| N5: DNS exception | N5-01–02 | Designated resolver over UDP/TCP 53 |
+| N5: DNS exception (Istio-only) | N5-01–02 | Designated resolver over UDP/TCP 53 |
 | N6: mesh/control exception | N6-01 | Recreated workload obtains fresh identity/configuration and completes authenticated business traffic |
 | PR0 regression | P0-01–04 | Native CNI injection, HTTP, mutual identities, STRICT rejection |
 
-The protected Pod's declared endpoint tuples are:
+The historical Istio-only fixture declares the following endpoint tuples. In the supported Calico profile, the DNS row is removed and per-Pod local capture/bootstrap configuration is applied; see [DNS isolation](docs/dns-isolation.md).
 
 | Endpoint | Transport / port | Purpose and authentication |
 | --- | --- | --- |

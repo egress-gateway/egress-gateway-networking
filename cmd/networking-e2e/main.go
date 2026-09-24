@@ -157,7 +157,7 @@ func run() (result error) {
 				if result != nil {
 					op.Error = result.Error()
 				}
-				report.Operations = append(report.Operations, op)
+				report.AddOperation(op)
 			}
 		}()
 		fmt.Printf("\n> %s\n", script)

@@ -1,3 +1,4 @@
+@pr0
 Feature: Mutual TLS for shared networking consumers
   Service authentication is a baseline capability, separate from egress isolation.
 
