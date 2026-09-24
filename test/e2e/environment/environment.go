@@ -20,6 +20,8 @@ type Executor func(context.Context, string, ...string) error
 
 type Environment struct {
 	Root, State, Artifacts, Cluster string
+	Profile                         string
+	PolicyTest                      func(context.Context) error
 	Keep                            bool
 	Execute                         Executor
 	Test                            func(context.Context) error
@@ -27,14 +29,21 @@ type Environment struct {
 
 type receipt struct {
 	Cluster string `json:"cluster"`
+	Profile string `json:"profile,omitempty"`
 	Inputs  string `json:"inputs"`
 	Ready   bool   `json:"ready"`
 }
 
 // Run uses one environment per suite. Retained test failures never trigger down.
 func (e *Environment) Run(ctx context.Context, mode string) (result error) {
-	if mode != "e2e" && mode != "up" && mode != "test" && mode != "down" {
+	if mode != "e2e" && mode != "up" && mode != "test" && mode != "down" && mode != "negative" {
 		return fmt.Errorf("unknown mode %q", mode)
+	}
+	if e.Profile == "" {
+		e.Profile = "istio-only"
+	}
+	if e.Profile != "istio-only" && e.Profile != "calico-istio" {
+		return fmt.Errorf("unknown profile %q", e.Profile)
 	}
 	create := mode == "e2e" || mode == "up"
 	if create {
@@ -69,7 +78,7 @@ func (e *Environment) Run(ctx context.Context, mode string) (result error) {
 				result = errors.Join(result, e.down(cleanupCtx))
 			}
 		}()
-		if err := e.setup(ctx); err != nil {
+		if err := e.setup(ctx, mode == "e2e"); err != nil {
 			return err
 		}
 	} else {
@@ -89,7 +98,10 @@ func (e *Environment) Run(ctx context.Context, mode string) (result error) {
 		if err != nil {
 			return err
 		}
-		if !r.Ready || inputs != r.Inputs {
+		if r.Profile == "" {
+			r.Profile = "istio-only"
+		}
+		if !r.Ready || inputs != r.Inputs || r.Profile != e.Profile {
 			return errors.New("environment is incomplete or install inputs changed; run down then up")
 		}
 		if err = e.phase(ctx, "environments/kind/verify.sh"); err != nil {
@@ -110,12 +122,12 @@ func (e *Environment) Run(ctx context.Context, mode string) (result error) {
 	return e.Test(ctx)
 }
 
-func (e *Environment) setup(ctx context.Context) error {
+func (e *Environment) setup(ctx context.Context, runPolicy bool) error {
 	inputs, err := e.fingerprint()
 	if err != nil {
 		return err
 	}
-	r := receipt{Cluster: e.Cluster, Inputs: inputs}
+	r := receipt{Cluster: e.Cluster, Profile: e.Profile, Inputs: inputs}
 	if err = e.writeReceipt(r); err != nil {
 		return err
 	}
@@ -127,6 +139,22 @@ func (e *Environment) setup(ctx context.Context) error {
 	}
 	if err = e.phase(ctx, "environments/kind/verify.sh"); err != nil {
 		return err
+	}
+	if e.Profile == "calico-istio" {
+		if err = e.Execute(ctx, "install/scripts/calico-install.sh", "--kubeconfig", filepath.Join(e.State, "kubeconfig"), "--context", "kind-"+e.Cluster, "--artifacts", e.Artifacts); err != nil {
+			return err
+		}
+		if err = e.phase(ctx, "test/e2e/scripts/np-up.sh"); err != nil {
+			return err
+		}
+		if runPolicy {
+			if e.PolicyTest == nil {
+				return errors.New("Calico setup requires NP acceptance before Istio")
+			}
+			if err = e.PolicyTest(ctx); err != nil {
+				return err
+			}
+		}
 	}
 	if err = e.Execute(ctx, "install/scripts/install.sh",
 		"--kubeconfig", filepath.Join(e.State, "kubeconfig"), "--context", "kind-"+e.Cluster,
@@ -170,6 +198,9 @@ func (e *Environment) down(ctx context.Context) error {
 
 func (e *Environment) fingerprint() (string, error) {
 	h := sha256.New()
+	if e.Profile == "calico-istio" {
+		fmt.Fprintln(h, e.Profile)
+	}
 	for _, dir := range []string{"install", "environments/kind", "test/e2e/config", "test/e2e/probe", "go.mod", "go.sum"} {
 		err := filepath.WalkDir(filepath.Join(e.Root, dir), func(path string, d fs.DirEntry, err error) error {
 			if errors.Is(err, os.ErrNotExist) {

@@ -20,9 +20,51 @@ type Suite struct {
 	Root, State, Artifacts string
 	Execute                environment.Executor
 	Report                 *Report
+	Tags                   string
 }
 
 func (s *Suite) Run(ctx context.Context) error {
+	if s.Tags != "" {
+		tags := s.Tags
+		if s.Report != nil && s.Report.Profile == "istio-only" {
+			clauses := strings.Split(tags, ",")
+			for i := range clauses {
+				clauses[i] = "~@calico && " + clauses[i]
+			}
+			tags = strings.Join(clauses, ",")
+		}
+		return s.run(ctx, tags)
+	}
+	if s.Report != nil && s.Report.Profile == "calico-istio" {
+		pendingNP := false
+		for _, c := range s.Report.Cases {
+			if strings.HasPrefix(c.ID, "NP-") && c.Actual == NotRun {
+				pendingNP = true
+			}
+		}
+		if pendingNP {
+			if err := s.RunPolicy(ctx); err != nil {
+				return err
+			}
+		}
+		return s.run(ctx, "~@np")
+	}
+	return s.run(ctx, "~@calico")
+}
+
+func (s *Suite) RunPolicy(ctx context.Context) error {
+	if err := s.run(ctx, "@np"); err != nil {
+		return err
+	}
+	for _, c := range s.Report.Cases {
+		if strings.HasPrefix(c.ID, "NP-") && !s.Report.CaseAccepted(c) {
+			return fmt.Errorf("NP acceptance failed: %s: %s", c.ID, c.Reason)
+		}
+	}
+	return nil
+}
+
+func (s *Suite) run(ctx context.Context, tags string) error {
 	if s.Report != nil {
 		data, err := os.ReadFile(filepath.Join(s.State, "environment.json"))
 		if err != nil {
@@ -43,14 +85,14 @@ func (s *Suite) Run(ctx context.Context) error {
 	var client, server access
 	var currentCase, observed, reason string
 	var blocked bool
-	var egressPrepared bool
+	var egressPrepared, networkFault bool
 	var egressExpected egressInputs
 	var caseStarted time.Time
 	scenarios := 0
 	var reportErrors []error
 	suite := godog.TestSuite{
 		Name:    "networking",
-		Options: &godog.Options{Format: "pretty", Paths: []string{filepath.Join(s.Root, "test/e2e/features")}, Strict: true, Concurrency: 1},
+		Options: &godog.Options{Format: "pretty", Paths: []string{filepath.Join(s.Root, "test/e2e/features")}, Strict: true, Concurrency: 1, Tags: tags},
 		ScenarioInitializer: func(sc *godog.ScenarioContext) {
 			sc.Before(func(_ context.Context, scenario *godog.Scenario) (context.Context, error) {
 				blocked = ctx.Err() != nil
@@ -61,7 +103,7 @@ func (s *Suite) Run(ctx context.Context) error {
 					return ctx, errors.New("suite interrupted or previous fault was not restored")
 				}
 				currentCase, observed, reason = caseID(scenario.Name), "", ""
-				egressPrepared = false
+				egressPrepared, networkFault = false, false
 				egressExpected = egressInputs{}
 				caseStarted = time.Now()
 				id = strings.ToLower(rand.Text()[:20])
@@ -81,6 +123,9 @@ func (s *Suite) Run(ctx context.Context) error {
 				}
 				if stepErr != nil {
 					observed, reason = ExecutionError, stepErr.Error()
+				}
+				if networkFault && (stepErr != nil || observed == ExecutionError || observed == Inconclusive) {
+					stepErr = errors.Join(stepErr, os.WriteFile(filepath.Join(s.State, "fault-active"), []byte(id+"\n"), 0600))
 				}
 				if observed == "" {
 					observed = Satisfied
@@ -102,6 +147,29 @@ func (s *Suite) Run(ctx context.Context) error {
 			operation := func(script string) error {
 				return s.Execute(ctx, "test/e2e/scripts/"+script+".sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
 			}
+			sc.Step(`^the network probe "([^"]+)" targets "([^"]+)" during "([^"]+)"$`, func(protocol, target, phase string) error {
+				egressExpected = egressInputs{Protocol: protocol, Target: target, Phase: phase}
+				networkFault = phase != "healthy" && phase != "capture"
+				return s.Execute(ctx, "test/e2e/scripts/network-case.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--protocol", protocol, "--target", target, "--phase", phase)
+			})
+			sc.Step(`^the network contract "([^"]+)" has attributable packet and enforcement evidence$`, func(contract string) error {
+				var err error
+				if contract == "capture" || contract == "gateway" || contract == "chain" {
+					observed, reason, err = awaitEvidence(ctx, 10*time.Second, func() (string, string, error) { return evaluateNetwork(dir, id, contract, egressExpected) }, func(ctx context.Context) error {
+						script := "test/e2e/scripts/network-logs.sh"
+						if contract == "chain" {
+							script = "test/e2e/scripts/egress-logs.sh"
+						}
+						return s.Execute(ctx, script, "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
+					})
+				} else {
+					observed, reason, err = evaluateNetwork(dir, id, contract, egressExpected)
+				}
+				if observed == ExecutionError && egressExpected.Phase != "healthy" && egressExpected.Phase != "capture" {
+					err = errors.Join(err, os.WriteFile(filepath.Join(s.State, "fault-active"), []byte(id+"\n"), 0600))
+				}
+				return err
+			})
 			sc.Step(`^the "([^"]+)" probe targets "([^"]+)" from "([^"]+)" during "([^"]+)"$`, func(protocol, target, source, phase string) error {
 				egressExpected = egressInputs{Protocol: protocol, Target: target, Client: source, Phase: phase}
 				err := s.Execute(ctx, "test/e2e/scripts/egress-case.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--protocol", protocol, "--target", target, "--client", source, "--phase", phase, "--defer-cleanup")
@@ -166,6 +234,9 @@ func (s *Suite) Run(ctx context.Context) error {
 		complete := s.Report != nil
 		if s.Report != nil {
 			for _, c := range s.Report.Cases {
+				if tags == "@np" && !strings.HasPrefix(c.ID, "NP-") {
+					continue
+				}
 				complete = complete && c.Actual != NotRun
 			}
 		}

@@ -65,6 +65,9 @@ func run(ctx context.Context, args []string) error {
 		return errors.New("serve|request|idle|pki required")
 	}
 	f := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	if args[0] == "drops" {
+		return traceDrops(ctx, f, args[1:])
+	}
 	if args[0] == "idle" {
 		<-ctx.Done()
 		return nil
@@ -158,7 +161,7 @@ func serve(ctx context.Context, f *flag.FlagSet, args []string) error {
 	tcpPort := f.String("tcp", "", "TCP echo listen port")
 	udpPorts := f.String("udp", "", "comma separated UDP echo ports")
 	quicPort := f.String("quic", "", "HTTP/3 listen port")
-	dnsPort := f.String("dns", "", "UDP DNS listen port")
+	dnsPort := f.String("dns", "", "TCP and UDP DNS listen port")
 	certDir := f.String("cert-dir", "/certs", "private test certificates")
 	if err := f.Parse(args); err != nil {
 		return err
@@ -251,6 +254,36 @@ func serve(ctx context.Context, f *flag.FlagSet, args []string) error {
 		})
 	}
 	if *dnsPort != "" {
+		listener, err := net.Listen("tcp", ":"+*dnsPort)
+		if err != nil {
+			return err
+		}
+		context.AfterFunc(ctx, func() { _ = listener.Close() })
+		start("dns-tcp", *dnsPort, func() error {
+			for {
+				c, err := listener.Accept()
+				if err != nil {
+					return err
+				}
+				go func() {
+					defer c.Close()
+					_ = c.SetDeadline(time.Now().Add(10 * time.Second))
+					var size [2]byte
+					if _, err := io.ReadFull(c, size[:]); err != nil {
+						return
+					}
+					data := make([]byte, binary.BigEndian.Uint16(size[:]))
+					if _, err := io.ReadFull(c, data); err != nil {
+						return
+					}
+					answer, err := dnsAnswer(data, c.RemoteAddr().String())
+					if err != nil {
+						return
+					}
+					_, _ = c.Write(append(binary.BigEndian.AppendUint16(nil, uint16(len(answer))), answer...))
+				}()
+			}
+		})
 		p, err := net.ListenPacket("udp", ":"+*dnsPort)
 		if err != nil {
 			return err
@@ -313,6 +346,7 @@ func dnsAnswer(data []byte, remote string) ([]byte, error) {
 }
 
 type observation struct {
+	UID       int       `json:"uid"`
 	ID        string    `json:"id"`
 	Sequence  int       `json:"sequence"`
 	Protocol  string    `json:"protocol"`
@@ -335,6 +369,8 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 	id := f.String("id", "", "correlation identifier")
 	serverName := f.String("server-name", "origin.test", "TLS peer name")
 	host := f.String("host", "", "HTTP Host override")
+	httpbin := f.Bool("httpbin", false, "validate the httpbin correlation header response")
+	connectOnly := f.Bool("connect-only", false, "TCP connection observation without an application exchange")
 	ca := f.String("ca", "/trust/ca.pem", "trusted public CA")
 	badCert := f.Bool("untrusted-client", false, "send self-signed fixture client certificate")
 	peerURI := f.String("peer-uri", "", "verify this SPIFFE URI instead of a DNS SAN")
@@ -350,6 +386,9 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 	}
 	if *target == "" || *id == "" || *interval <= 0 || *timeout <= 0 {
 		return errors.New("target, id and positive interval/timeout required")
+	}
+	if *connectOnly && *protocol != "tcp" {
+		return errors.New("connect-only requires raw TCP")
 	}
 	if *requiredSuccesses < 0 || (*stopOnInput || *requiredSuccesses > 0) && *duration <= 0 || *stopOnInput && *requiredSuccesses > 0 {
 		return errors.New("controlled probes require a positive deadline and exactly one completion condition")
@@ -480,7 +519,7 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 		default:
 		}
 		cctx, cancel := context.WithTimeout(probeCtx, *timeout)
-		o := observation{ID: *id, Sequence: sequence, Protocol: *protocol, Target: *target, Started: time.Now().UTC(), Attempted: true}
+		o := observation{UID: os.Getuid(), ID: *id, Sequence: sequence, Protocol: *protocol, Target: *target, Started: time.Now().UTC(), Attempted: true}
 		err := func() error {
 			if *protocol == "http" || *protocol == "https" || *protocol == "quic" {
 				scheme := "http"
@@ -521,7 +560,22 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 				if err = json.Unmarshal(b, &echoed); err != nil {
 					return err
 				}
-				if response.StatusCode != 200 || echoed.ID != *id {
+				correlated := echoed.ID == *id
+				if *httpbin {
+					var body struct {
+						Headers map[string][]string `json:"headers"`
+					}
+					if err := json.Unmarshal(b, &body); err != nil {
+						return err
+					}
+					correlated = false
+					for name, values := range body.Headers {
+						if strings.EqualFold(name, "X-Networking-Test-Id") && len(values) == 1 && values[0] == *id {
+							correlated = true
+						}
+					}
+				}
+				if response.StatusCode != 200 || !correlated {
 					return fmt.Errorf("unexpected application response %d", response.StatusCode)
 				}
 				return nil
@@ -545,6 +599,9 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 			o.Connected = true
 			o.Local = c.LocalAddr().String()
 			o.Remote = c.RemoteAddr().String()
+			if *connectOnly {
+				return nil
+			}
 			deadline, _ := cctx.Deadline()
 			if err := c.SetDeadline(deadline); err != nil {
 				return err

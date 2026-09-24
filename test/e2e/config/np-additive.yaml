@@ -1,0 +1,14 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: case-allow, namespace: networking-np}
+spec:
+  podSelector:
+    matchLabels: {networking.egress/protected: 'true'}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: networking-np}
+          podSelector:
+            matchLabels: {app: httpbin}
+      ports: [{protocol: TCP, port: 19090}, {protocol: UDP, port: 19090}]

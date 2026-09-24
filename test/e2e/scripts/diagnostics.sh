@@ -10,7 +10,7 @@ for app in curl httpbin; do
   k -n networking-test logs "$name" -c istio-validation > "$artifacts/$app-validation.log" 2>&1 || true
 done
 
-for ns in networking-egress networking-gateway networking-controls; do
+for ns in networking-egress networking-gateway networking-controls networking-np networking-np-other calico-system tigera-operator; do
   k -n "$ns" get pods -o wide > "$artifacts/$ns-pods.txt" 2>&1 || true
   k -n "$ns" get events --sort-by=.lastTimestamp > "$artifacts/$ns-events.txt" 2>&1 || true
   while IFS= read -r name; do
@@ -19,6 +19,11 @@ for ns in networking-egress networking-gateway networking-controls; do
   done < <(k -n "$ns" get pods -o json | jq -r '.items[].metadata.name')
   k -n "$ns" get pods -o json | jq '[.items[]|{name:.metadata.name,uid:.metadata.uid,images:[.status.containerStatuses[]?,.status.initContainerStatuses[]?]|map({name,image,imageID,restartCount,state})}]' > "$artifacts/$ns-images.json" || true
 done
+k get nodes -o json | jq '[.items[]|{name:.metadata.name,kernel:.status.nodeInfo.kernelVersion,architecture:.status.nodeInfo.architecture}]' > "$artifacts/kernel.json" || true
+if [[ $(jq -r .profile "$state_dir/environment.json") == calico-istio ]]; then
+  cp "$root/install/calico/versions.env" "$artifacts/calico-versions.env"
+  k get tigerastatus -o wide > "$artifacts/calico-status.txt" 2>&1 || true
+fi
 if [[ -f "$state_dir/egress.json" ]]; then
   source "$(dirname "$0")/egress-lib.sh"
   cp "$state_dir/egress.json" "$artifacts/egress-fixtures.json"

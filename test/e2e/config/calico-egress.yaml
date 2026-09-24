@@ -1,0 +1,26 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata: {name: protected-egress, namespace: networking-egress}
+spec:
+  podSelector:
+    matchLabels: {networking.egress/protected: 'true'}
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: networking-gateway}
+          podSelector:
+            matchLabels: {app: gateway}
+      ports: [{protocol: TCP, port: 15443}, {protocol: TCP, port: 15444}]
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: kube-system}
+          podSelector:
+            matchLabels: {k8s-app: kube-dns}
+      ports: [{protocol: TCP, port: 53}, {protocol: UDP, port: 53}]
+    - to:
+        - namespaceSelector:
+            matchLabels: {kubernetes.io/metadata.name: istio-system}
+          podSelector:
+            matchLabels: {app: istiod}
+      ports: [{protocol: TCP, port: 15012}]

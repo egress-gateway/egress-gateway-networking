@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Sourced after common.sh has verified this invocation's owned kind node.
+node_stamp() {
+  # Probes and Kubernetes timestamps use the Linux node clock; the host runner
+  # can have a different clock when Docker runs inside a VM.
+  docker exec "$cluster-control-plane" date -u "${1:-+%Y-%m-%dT%H:%M:%S.%NZ}"
+}
 epod() {
   k -n "$1" get pods -l "app=$2" -o json | jq -er '.items | map(select(.metadata.deletionTimestamp == null)) | if length == 1 then .[0].metadata.name else error("ambiguous fixture Pod") end'
 }
@@ -9,13 +14,17 @@ receiver_owned() {
   jq -e --arg owner "$state_dir/owner" --arg cluster "$cluster" '.[0] | .Config.Labels["networking.e2e.cluster"] == $cluster and any(.Mounts[]; .Source == $owner and .Destination == "/owner" and .RW == false)' <<< "$info" >/dev/null
   [[ "$(jq -r '.[0].Id' <<< "$info")" == "$(cat "$state_dir/$role-id")" ]] || { echo 'receiver identity changed' >&2; return 1; }
 }
+receiver_snapshot() {
+  receiver_owned "$1"
+  docker inspect "$cluster-$1" | jq -ce '.[0]|select(.State.Running==true)|{id:.Id,started:.State.StartedAt,restarts:.RestartCount}'
+}
 pod_snapshot() {
   k -n "$1" get pod "$2" -o json | jq -c '{uid:.metadata.uid,ip:.status.podIP,containers:([.status.containerStatuses[]?,.status.initContainerStatuses[]?]|map({name,containerID,restartCount}))}'
 }
 sandbox_pid() {
   local ns=$1 name=$2 uid sid info
   uid=$(k -n "$ns" get pod "$name" -o jsonpath='{.metadata.uid}')
-  sid=$(docker exec "$cluster-control-plane" crictl pods --namespace "$ns" --name "^$name$" -q)
+  sid=$(docker exec "$cluster-control-plane" crictl pods --namespace "^$ns$" --name "^$name$" --state Ready -q)
   [[ "$sid" =~ ^[a-f0-9]+$ ]] || { echo 'ambiguous sandbox' >&2; return 1; }
   info=$(docker exec "$cluster-control-plane" crictl inspectp "$sid")
   [[ "$(jq -r '.status.metadata.uid' <<< "$info")" == "$uid" ]] || { echo 'sandbox UID mismatch' >&2; return 1; }
@@ -24,7 +33,7 @@ sandbox_pid() {
 envoy_pid() {
   local ns=$1 name=$2 sid cid parent child
   sandbox_pid "$ns" "$name" >/dev/null
-  sid=$(docker exec "$cluster-control-plane" crictl pods --namespace "$ns" --name "^$name$" -q)
+  sid=$(docker exec "$cluster-control-plane" crictl pods --namespace "^$ns$" --name "^$name$" --state Ready -q)
   cid=$(docker exec "$cluster-control-plane" crictl ps --pod "$sid" --name istio-proxy -q)
   [[ "$cid" =~ ^[a-f0-9]+$ ]] || return 1
   parent=$(docker exec "$cluster-control-plane" crictl inspect "$cid" | jq -er '.info.pid')
@@ -96,13 +105,35 @@ capture_finish() {
 # Mark the entire verification stage unsafe until every operation succeeds.
 verify_recovery() {
   recovery_failed=true
-if [[ "$phase" == repair || "$phase" == identity-down ]]; then
-  k -n networking-egress wait pod "$fault_pod" --for=condition=Ready --timeout=180s >/dev/null
-  k -n networking-egress exec "$fault_pod" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$test_id-recovered" --timeout 5s > "$artifacts/recovered.jsonl"
-  if ! jq -se --arg id "$test_id-recovered" 'any(.[];.id==$id and .success==true)' "$artifacts/recovered.jsonl" >/dev/null; then recovery_failed=true; exit 1; fi
-elif [[ "$phase" != healthy && "$phase" != untrusted ]]; then
-  k -n networking-egress exec "$(epod networking-egress workload)" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$test_id-recovery" --duration 15s --successes 2 --timeout 5s > "$artifacts/recovery.jsonl"
-  if ! jq -se --arg id "$test_id-recovery" 'length>=2 and (.[-2:]|all(.[];.id==$id and .success==true))' "$artifacts/recovery.jsonl" >/dev/null; then recovery_failed=true; exit 1; fi
-fi
+  local recovery_pod recovery_id recovery_file count
+  if [[ "$phase" == healthy || "$phase" == untrusted ]]; then recovery_failed=false; return; fi
+  if [[ "$phase" == repair || "$phase" == identity-down ]]; then
+    k -n networking-egress wait pod "$fault_pod" --for=condition=Ready --timeout=180s >/dev/null
+    recovery_pod=$fault_pod; recovery_id="$test_id-recovered"; recovery_file=recovered.jsonl; count=1
+  else
+    recovery_pod=$(epod networking-egress workload); recovery_id="$test_id-recovery"; recovery_file=recovery.jsonl; count=2
+  fi
+  # Pod readiness can precede the workload Envoy's endpoint update. Keep
+  # convergence attempts separate from the strictly authenticated proof.
+  k -n networking-egress exec "$recovery_pod" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$test_id-recovery-ready" --duration 15s --successes 1 --timeout 5s > "$artifacts/recovery-ready.jsonl"
+  jq -se --arg id "$test_id-recovery-ready" 'length>0 and .[-1].id==$id and .[-1].success==true' "$artifacts/recovery-ready.jsonl" >/dev/null
+  k -n networking-egress exec "$recovery_pod" -c probe -- /probe request --protocol http --target "$origin:8080" --host origin.test --id "$recovery_id" --duration 15s --successes "$count" --timeout 5s > "$artifacts/$recovery_file"
+  jq -se --arg id "$recovery_id" --argjson count "$count" 'length==$count and all(.[];.id==$id and .success==true)' "$artifacts/$recovery_file" >/dev/null
   recovery_failed=false
+}
+
+release_gate() {
+  local name=$1 result=0
+  k -n networking-egress get pod "$name" -o json |
+    jq '{uid:.metadata.uid,gate:(.status.initContainerStatuses[]|select(.name=="test-gate"))}' > "$artifacts/gate-before.json"
+  jq -e '(.uid|type=="string" and length>0) and (.gate.containerID|type=="string" and length>0) and .gate.state.running!=null' "$artifacts/gate-before.json" >/dev/null
+  # Stopping PID 1 can kill the exec process before its response is delivered.
+  # Only the same container's successful Kubernetes completion proves release.
+  k -n networking-egress exec "$name" -c test-gate -- /probe release > "$artifacts/gate-release.log" 2>&1 || result=$?
+  printf '%s\n' "$result" > "$artifacts/gate-release-exit.txt"
+  case "$result" in 0|137) ;; *) cat "$artifacts/gate-release.log" >&2; return "$result";; esac
+  k -n networking-egress wait pod "$name" '--for=jsonpath={.status.initContainerStatuses[?(@.name=="test-gate")].state.terminated.exitCode}=0' --timeout=15s > "$artifacts/gate-wait.log"
+  k -n networking-egress get pod "$name" -o json |
+    jq '{uid:.metadata.uid,gate:(.status.initContainerStatuses[]|select(.name=="test-gate"))}' > "$artifacts/gate-after.json"
+  jq -e --slurpfile before "$artifacts/gate-before.json" '.uid==$before[0].uid and .gate.containerID==$before[0].gate.containerID and .gate.restartCount==$before[0].gate.restartCount and .gate.state.terminated.exitCode==0 and .gate.state.terminated.reason=="Completed"' "$artifacts/gate-after.json" >/dev/null
 }

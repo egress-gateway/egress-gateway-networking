@@ -1,0 +1,30 @@
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+  labels: {networking.egress/managed: calico-v3.32.2}
+spec:
+  variant: Calico
+  registry: quay.io/
+  cni:
+    type: Calico
+    ipam: {type: Calico}
+  calicoNetwork:
+    linuxDataplane: Iptables
+    bgp: Disabled
+    kubeProxyManagement: Disabled
+    linuxPolicySetupTimeoutSeconds: 10
+    ipPools:
+      - cidr: 10.244.0.0/16
+        encapsulation: VXLAN
+        natOutgoing: Enabled
+        nodeSelector: all()
+---
+apiVersion: crd.projectcalico.org/v1
+kind: FelixConfiguration
+metadata: {name: default}
+spec:
+  defaultEndpointToHostAction: Drop
+  chainInsertMode: Insert
+  ipv6Support: false
+  bpfEnabled: false

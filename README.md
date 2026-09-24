@@ -8,6 +8,12 @@ PR0 uses the default IPv4 kind network plus the chained Istio CNI in sidecar mod
 It **does not enforce fail-closed egress**. STRICT mTLS authenticates the test
 service; it is not an egress isolation boundary.
 
+The `calico-istio` candidate adds pinned Calico 3.32.2 (iptables, IPv4 VXLAN,
+kube-proxy retained), exact Pod egress NetworkPolicies, and 30 additional cases.
+It requires `--acceptance=enforce`: all 73 cases must satisfy their contracts.
+See [Calico acceptance and boundaries](docs/calico.md). Neither profile imports
+gateway/controller code, and neither exposes a public enrollment API.
+
 ## Layout and ownership
 
 ```text

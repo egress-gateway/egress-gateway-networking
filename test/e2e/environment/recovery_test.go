@@ -13,7 +13,7 @@ func TestShellRecoveryCommandsKeepFailureStateUntilVerified(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tc := range []struct{ phase, fail string }{{"repair", "wait"}, {"repair", "exec"}, {"sidecar-stop", "exec"}, {"repair", "none"}} {
+	for _, tc := range []struct{ phase, fail string }{{"repair", "wait"}, {"repair", "exec"}, {"sidecar-stop", "exec"}, {"repair", "none"}, {"sidecar-stop", "none"}, {"gateway-down", "converging"}, {"gateway-down", "proof"}} {
 		t.Run(tc.phase+"-"+tc.fail, func(t *testing.T) {
 			artifacts := t.TempDir()
 			script := `set -euo pipefail
@@ -30,7 +30,16 @@ k() {
  case " $* " in
   *" wait "*) [[ "$failure" != wait ]];;
   *" exec "*) [[ "$failure" != exec ]] || return 1
-    printf '%s\n' '{"id":"case-recovered","success":true}';;
+    id='' count=1
+    while (($#)); do
+      case "$1" in --id) id=$2; shift;; --successes) count=$2; shift;; esac
+      shift
+    done
+    printf '%s\n' "$id" >> "$artifacts/request-ids"
+    if [[ "$failure" == converging && "$id" == case-recovery-ready || "$failure" == proof && "$id" == case-recovery ]]; then
+      printf '{"id":"%s","success":false}\n' "$id"
+    fi
+    for ((i=0;i<count;i++)); do printf '{"id":"%s","success":true}\n' "$id"; done;;
  esac
 }
 epod() { printf '%s\n' fixture; }
@@ -42,9 +51,13 @@ verify_recovery
 			if err != nil {
 				t.Fatalf("state missing: %v %s", err, output)
 			}
-			if tc.fail == "none" {
+			if tc.fail == "none" || tc.fail == "converging" {
 				if runErr != nil || string(data) != "false" {
 					t.Fatalf("successful recovery stayed blocked: %v %s %s", runErr, data, output)
+				}
+				ids, err := os.ReadFile(filepath.Join(artifacts, "request-ids"))
+				if err != nil || !strings.HasPrefix(string(ids), "case-recovery-ready\n") || strings.Count(string(ids), "\n") != 2 {
+					t.Fatalf("readiness and proof were not separated: %s %v", ids, err)
 				}
 			} else if runErr == nil || strings.TrimSpace(string(data)) != "true" {
 				t.Fatalf("failed recovery released guard: %v %s %s", runErr, data, output)

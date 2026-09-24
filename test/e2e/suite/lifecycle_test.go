@@ -111,3 +111,62 @@ func TestInterruptedOrUnrestoredSuiteLeavesRemainingCasesNotRun(t *testing.T) {
 		})
 	}
 }
+
+func TestMissingOrCorruptRecoveryEvidenceStopsLaterNetworkCases(t *testing.T) {
+	for _, corrupt := range []bool{false, true} {
+		t.Run(map[bool]string{false: "missing", true: "corrupt"}[corrupt], func(t *testing.T) {
+			root, state, artifacts := t.TempDir(), t.TempDir(), t.TempDir()
+			featureDir := filepath.Join(root, "test/e2e/features")
+			if err := os.MkdirAll(featureDir, 0700); err != nil {
+				t.Fatal(err)
+			}
+			feature := `Feature: network recovery
+ Scenario: C3-01 missing recovery
+  When the network probe "tcp" targets "np-wrong" during "felix-existing"
+  Then the network contract "deny" has attributable packet and enforcement evidence
+ Scenario: C3-02 later case
+  When the network probe "udp" targets "np-wrong" during "healthy"
+  Then the network contract "deny" has attributable packet and enforcement evidence
+`
+			for path, body := range map[string]string{filepath.Join(featureDir, "failure.feature"): feature, filepath.Join(state, "environment.json"): `{"inputs":"test"}`} {
+				if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			report, err := NewReport(root, artifacts, "enforce", "test", false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			calls := 0
+			s := Suite{Root: root, State: state, Artifacts: artifacts, Report: report, Execute: func(_ context.Context, _ string, args ...string) error {
+				calls++
+				values := map[string]string{}
+				for i := 0; i < len(args); i += 2 {
+					values[args[i]] = args[i+1]
+				}
+				id, dir := values["--test-id"], values["--artifacts"]
+				files := map[string]string{
+					"network.json":         `{"id":"` + id + `","protocol":"tcp","target":"np-wrong","phase":"felix-existing","receiver_before":"uid","receiver_after":"uid","restored":true,"fault_verified":true}`,
+					"control-before.jsonl": `{"id":"` + id + `-control-before","attempted":true,"success":true}`,
+					"control-after.jsonl":  `{"id":"` + id + `-control-after","attempted":true,"success":true}`,
+					"probe.jsonl":          `{"id":"` + id + `","attempted":true}`,
+				}
+				if corrupt {
+					files["recovery-allow.jsonl"] = `{"broken"`
+				}
+				for name, body := range files {
+					if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0600); err != nil {
+						return err
+					}
+				}
+				return nil
+			}}
+			if err := s.Run(t.Context()); err == nil {
+				t.Fatal("missing recovery passed")
+			}
+			if calls != 1 || report.Cases[0].Actual != ExecutionError || report.Cases[1].Actual != NotRun {
+				t.Fatalf("continued after unverifiable recovery: calls=%d cases=%+v", calls, report.Cases)
+			}
+		})
+	}
+}
