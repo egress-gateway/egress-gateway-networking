@@ -22,6 +22,10 @@ for resource in deployment/istiod daemonset/istio-cni-node; do
 done
 values=()
 [[ -z "$istiod_values" ]] || values=(-f "$istiod_values")
+if [[ -n "$enrollment_label" ]]; then
+  jq -n --arg label "$enrollment_label" '{sidecarInjectorWebhook:{neverInjectSelector:[{matchLabels:{($label):"true"}}]}}' > "$cache_dir/enrollment-injection.json"
+  values+=(-f "$cache_dir/enrollment-injection.json")
+fi
 h upgrade --install istio-base "$charts/base" -n istio-system --create-namespace --wait --timeout 5m
 h upgrade --install istiod "$charts/istio-control/istio-discovery" -n istio-system \
   -f "$root/install/values/istiod.yaml" "${values[@]}" \

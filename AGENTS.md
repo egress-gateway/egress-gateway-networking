@@ -16,6 +16,7 @@
   Never commit/upload kubeconfig, Secrets, keys or complete proxy config dumps.
 - PR0 establishes HTTP/mTLS using Istio sidecars and chained CNI. PR0.5 measures
   its not-fail-closed baseline; expected violations remain visible in per-case reports.
-  Baseline expectations change only after evidence review, never at runtime. It does not
-  provide fail-closed egress or a public Pod enrollment contract. Preserve that
-  distinction in tests and documentation; V01-02 stays open after PR0.
+  Baseline expectations change only after evidence review, never at runtime. The Istio-only profile does not
+  provide fail-closed egress. Public enrollment owns fixed network templates and
+  pure generation, not controller reconciliation or gateway runtime composition.
+  Preserve these ownership boundaries; parent V01-02 remains open.

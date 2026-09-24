@@ -4,10 +4,10 @@ umask 077
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # shellcheck source=../versions.env
 source "$root/install/versions.env"
-kubeconfig='' context='' artifacts='' cache_dir="$root/.cache" istiod_values=''
+kubeconfig='' context='' artifacts='' cache_dir="$root/.cache" istiod_values='' enrollment_label=''
 while (($#)); do
   case "$1" in
-    --kubeconfig|--context|--artifacts|--cache-dir|--istiod-values)
+    --kubeconfig|--context|--artifacts|--cache-dir|--istiod-values|--enrollment-label)
       (($# >= 2)) || { echo "missing value: $1" >&2; exit 2; }
       key=${1#--}; key=${key//-/_}; printf -v "$key" '%s' "$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;

@@ -21,8 +21,8 @@ func TestProfilesKeepTheOriginalInventoryAndRegisterEveryNewCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(candidate.Cases) != 124 {
-		t.Fatalf("candidate inventory: got %d want 124", len(candidate.Cases))
+	if len(candidate.Cases) != 143 {
+		t.Fatalf("candidate inventory: got %d want 143", len(candidate.Cases))
 	}
 	for _, c := range candidate.Cases {
 		if c.ID == "N5-01" || c.ID == "N5-02" || c.ID == "C1-04" || c.ID == "C1-05" {

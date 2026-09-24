@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/cucumber/godog"
+	versions "github.com/egress-gateway/egress-gateway-networking/baseline"
 )
 
 const (
@@ -102,7 +103,7 @@ func NewProfileReport(root, dir, profile, mode, sha string, dirty bool) (*Report
 	r.Configuration = map[string]string{"topology": "single-node IPv4; kind default network; chained Istio CNI; sidecar + official gateway"}
 	if profile == "calico-istio" {
 		r.Configuration["topology"] = "single-node IPv4; Calico iptables/VXLAN; kube-proxy; chained Istio CNI; isolated NP fixture"
-		r.Configuration["CALICO_VERSION"] = "v3.32.2"
+		r.Configuration["CALICO_VERSION"] = versions.Current().Calico["CALICO_VERSION"]
 	}
 	if run := os.Getenv("GITHUB_RUN_ID"); run != "" {
 		r.Configuration["ci_run"] = run

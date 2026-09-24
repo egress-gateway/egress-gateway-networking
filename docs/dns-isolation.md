@@ -13,30 +13,19 @@ this repository's acceptance.
 
 ## Static protected Pod configuration
 
-`install/scripts/protected-pod.sh` reads one Pod or Deployment JSON on stdin and
-writes rendered JSON on stdout. It requires explicit `--kubeconfig` and
-`--context`, queries the installed Istiod Service, and never applies resources.
-The caller establishes the NetworkPolicy before creating the rendered workload.
+The static consumer resolves Istiod, calls the public `enrollment.ExpandPolicy`
+before workload creation, composes the native sidecar, then calls `ExpandPod`.
+The public functions never query the cluster. [Enrollment](enrollment.md) specifies
+variable values, fixed capture fields, original-label injection exclusion and
+startup ordering. Both egress and four independent DNS groups consume it; gateway
+fixtures and Istio-only retain official injection. Faults alter only test copies
+of already expanded Pods.
 
-The input must carry `networking.egress/protected: 'true'` or the DNS fixture's
-`networking.dns/protected: 'true'` on the Pod metadata. An existing
-`proxy.istio.io/config` annotation must be JSON; unsupported input fails rather
-than being silently replaced. The operation preserves other proxy metadata,
-sets `ISTIO_META_DNS_CAPTURE`, and maps Istiod's two service names to its current
-IPv4 Service address. It preserves TLS name validation, does not grant application
-API access, and does not open DNS during bootstrap. Re-render Pods after an
-Istiod Service address change. This is a static composition operation, not the
-future public enrollment API or a reconciliation controller.
-
-Both the egress and independent DNS fixtures use this operation. It does not
-change mesh defaults, gateway Pods or the Istio-only profile. Fault Pods inherit
-the rendered configuration before applying their deliberate test-only overrides.
-
-The subsequent enrollment contract defaults to no DNS egress and will support
-explicit caller-selected resolver endpoints and TCP/UDP 53. Such exceptions are
-Pod-wide: NetworkPolicy cannot permit a sidecar while excluding the application.
-The consumer owns query policy, recursion and tunnel prevention. That future
-mode requires its own acceptance; it is not implemented here.
+The default Network DNS list is empty. An explicit resolver peer generates only
+TCP/UDP 53 allowances. These are Pod-wide, including application bypass traffic;
+consumers own query semantics and recursion. Controlled resolver tests separately
+cover direct application queries and sidecar fallback, then revoke the exception
+and prove that new queries are blocked with correlated observations.
 
 ## Acceptance and historical evidence
 

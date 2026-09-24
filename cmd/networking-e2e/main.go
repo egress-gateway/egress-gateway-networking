@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/egress-gateway/egress-gateway-networking/test/e2e/consumer"
 	"github.com/egress-gateway/egress-gateway-networking/test/e2e/environment"
 	"github.com/egress-gateway/egress-gateway-networking/test/e2e/suite"
 )
@@ -31,6 +32,36 @@ func run() (result error) {
 	if len(os.Args) < 2 {
 		return fmt.Errorf("usage: networking-e2e e2e|up|test|down|inventory|summary [flags]")
 	}
+	if os.Args[1] == "render-enrollment" {
+		f := flag.NewFlagSet("render-enrollment", flag.ContinueOnError)
+		image := f.String("image", "", "local probe image")
+		if err := f.Parse(os.Args[2:]); err != nil {
+			return err
+		}
+		if *image == "" {
+			return fmt.Errorf("probe image required")
+		}
+		return consumer.RenderAcceptance(os.Stdout, *image)
+	}
+	// Private fixture operation used by Shell; public consumers import enrollment.
+	if os.Args[1] == "render-fixture" {
+		f := flag.NewFlagSet("render-fixture", flag.ContinueOnError)
+		ns := f.String("namespace", "", "policy namespace")
+		ip := f.String("istiod-ip", "", "caller-resolved control address")
+		resolver := f.String("resolver", "", "private controlled resolver fixture")
+		policy := f.Bool("policy", false, "render policy before workload creation")
+		only := f.Bool("policy-only", false, "unmeshed isolation fixture")
+		if err := f.Parse(os.Args[2:]); err != nil {
+			return err
+		}
+		if *policy {
+			if *resolver != "" {
+				return consumer.RenderResolverPolicy(os.Stdout, *ns, *ip, *resolver)
+			}
+			return consumer.RenderPolicy(os.Stdout, *ns, *ip)
+		}
+		return consumer.RenderPod(os.Stdin, os.Stdout, *ip, os.Getenv("NETWORKING_PROXY_SPEC"), *only)
+	}
 	flags := flag.NewFlagSet(os.Args[1], flag.ContinueOnError)
 	root := flags.String("root", ".", "repository root")
 	state := flags.String("state-dir", ".e2e/state", "private retained state")
@@ -41,6 +72,8 @@ func run() (result error) {
 	profile := flags.String("profile", "istio-only", "istio-only or calico-istio")
 	tags := flags.String("tags", "", "development Godog tag subset; unexecuted cases keep full acceptance red")
 	acceptance := flags.String("acceptance", "baseline", "baseline or enforce acceptance")
+	proxySpec := flags.String("proxy-spec", "", "caller native-sidecar JSON fragment for Calico enrollment acceptance")
+	expectedRevision := flags.String("expected-revision", "", "consumer networking commit; must equal installation checkout HEAD")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		return err
 	}
@@ -101,6 +134,22 @@ func run() (result error) {
 		return strings.TrimSpace(string(b))
 	}
 	sha, dirty := git("rev-parse", "HEAD"), git("status", "--porcelain", "--untracked-files=normal")
+	if *expectedRevision != "" && *expectedRevision != sha {
+		return fmt.Errorf("networking asset revision mismatch: expected %s, checkout %s", *expectedRevision, sha)
+	}
+	if *proxySpec != "" {
+		if *profile != "calico-istio" {
+			return errors.New("proxy-spec requires calico-istio")
+		}
+		*proxySpec, err = filepath.Abs(*proxySpec)
+		if err != nil {
+			return err
+		}
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return err
+	}
 	defer func() {
 		status := "passed"
 		if result != nil {
@@ -168,6 +217,7 @@ func run() (result error) {
 		defer log.Close()
 		cmd := exec.CommandContext(ctx, bash, append([]string{filepath.Join(*root, script)}, args...)...)
 		cmd.Dir = *root
+		cmd.Env = append(os.Environ(), "NETWORKING_E2E_BIN="+self, "NETWORKING_PROXY_SPEC="+*proxySpec)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 		cmd.WaitDelay = 5 * time.Second
@@ -179,7 +229,7 @@ func run() (result error) {
 		return nil
 	}
 	s := suite.Suite{Root: *root, State: *state, Artifacts: runDir, Execute: execute, Report: report, Tags: *tags}
-	e := environment.Environment{Root: *root, State: *state, Artifacts: runDir, Cluster: *cluster, Keep: *keep, Profile: *profile, Execute: execute, Test: s.Run, PolicyTest: s.RunPolicy}
+	e := environment.Environment{Root: *root, State: *state, Artifacts: runDir, Cluster: *cluster, Keep: *keep, Profile: *profile, ProxySpec: *proxySpec, Execute: execute, Test: s.Run, PolicyTest: s.RunPolicy}
 	if os.Args[1] == "negative" {
 		e.Test = s.RunNegative
 	}

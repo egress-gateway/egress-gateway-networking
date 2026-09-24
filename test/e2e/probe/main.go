@@ -65,6 +65,9 @@ func run(ctx context.Context, args []string) error {
 		return errors.New("serve|request|idle|pki required")
 	}
 	f := flag.NewFlagSet(args[0], flag.ContinueOnError)
+	if args[0] == "privileges" {
+		return privileges(f, args[1:])
+	}
 	if args[0] == "drops" {
 		return traceDrops(ctx, f, args[1:])
 	}

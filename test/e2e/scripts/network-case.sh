@@ -20,11 +20,18 @@ receiver_ns=networking-np receiver_pod=httpbin receiver_container=httpbin
 port=8080 httpbin=(--httpbin)
 control=(k -n networking-np-other exec control -- /probe)
 started=$(node_stamp)
-if [[ "$target" != np-* ]]; then
+if [[ "$target" != np-* && "$target" != enrollment-* ]]; then
   source_ns=networking-egress; source_pod=$(epod "$source_ns" plain)
   httpbin=()
 fi
 case "$target" in
+  enrollment-a-own|enrollment-a-other|enrollment-b-own|enrollment-b-other)
+    source_ns=networking-enrollment; source_pod=a
+    [[ "$target" != enrollment-b-* ]] || source_pod=b
+    receiver_pod=httpbin
+    if [[ "$target" == enrollment-a-other || "$target" == enrollment-b-own ]]; then receiver_pod=other; fi
+    ip=$(k -n "$receiver_ns" get pod "$receiver_pod" -o jsonpath='{.status.podIP}')
+    ;;
   np-service) ip=$(k -n networking-np get service httpbin -o jsonpath='{.spec.clusterIP}'); port=8000 ;;
   np-ip|np-wrong|np-udp) ip=$(k -n networking-np get pod httpbin -o jsonpath='{.status.podIP}');;
   np-other) receiver_pod=other; ip=$(k -n networking-np get pod other -o jsonpath='{.status.podIP}');;
@@ -200,6 +207,9 @@ if [[ -z "$receiver_ns" ]]; then
 else
   after=$(pod_snapshot "$receiver_ns" "$receiver_pod")
   k -n "$receiver_ns" logs "$receiver_pod" -c "$receiver_container" --since-time "$started" > "$artifacts/receiver.log"
+fi
+if [[ "$phase" == capture ]]; then
+  k -n "$source_ns" exec "$source_pod" -c istio-proxy -- pilot-agent request GET 'listeners?format=json' > "$artifacts/capture-listeners.json"
 fi
 if [[ "$source_ns" == networking-egress && "$source_pod" != "$(epod networking-egress plain)" ]]; then
   jq -n --arg started "$started" --arg pod "$source_pod" --arg gateway "$(epod networking-gateway gateway)" '{started:$started,pod:$pod,gateway:$gateway}' > "$artifacts/network-log-context.json"

@@ -33,6 +33,7 @@ if [[ -f "$state_dir/egress.json" ]]; then
   source "$(dirname "$0")/egress-lib.sh"
   cp "$state_dir/egress.json" "$artifacts/egress-fixtures.json"
   for role in origin quic dns-records dns-destinations dns-bypass dns-lifecycle; do
+    [[ -f "$state_dir/$role-id" ]] || continue
     if receiver_owned "$role"; then docker logs --tail 500 "$cluster-$role" > "$artifacts/$role.log" 2>&1 || true; fi
   done
 fi

@@ -9,10 +9,10 @@ It **does not enforce fail-closed egress**. STRICT mTLS authenticates the test
 service; it is not an egress isolation boundary.
 
 The `calico-istio` candidate adds pinned Calico 3.32.2 (iptables, IPv4 VXLAN,
-kube-proxy retained), exact Pod egress NetworkPolicies, and 30 additional cases.
-It requires `--acceptance=enforce`: all 73 cases must satisfy their contracts.
+kube-proxy retained), exact Pod egress NetworkPolicies, and per-case network/DNS acceptance.
+It requires `--acceptance=enforce`: every applicable case must satisfy its contract.
 See [Calico acceptance and boundaries](docs/calico.md). Neither profile imports
-gateway/controller code, and neither exposes a public enrollment API.
+gateway/controller code, and the public [enrollment contract](docs/enrollment.md) is consumed through Go.
 
 ## Layout and ownership
 
@@ -21,6 +21,9 @@ gateway E2E ────┐
 controller E2E ┼──> install/ ──> Kubernetes / Helm / official Istio
 future CLI ────┘
 
+enrollment/            Pure policy and Pod expansion; fixed network contract
+baseline/              Embedded single version source and data accessor
+test/e2e/consumer/     Static caller that composes the official runtime
 cmd/networking-e2e/     Go command shared by Make and CI
 environments/kind/     Owned test cluster lifecycle (Shell + YAML)
 install/               Reusable install/check/diagnostics and pinned inputs
@@ -36,7 +39,7 @@ test/e2e/config/       Test applications, security policy and logging override
 The installer creates only shared infrastructure. It takes an explicit kubeconfig
 and context, installs official Istiod/CNI/proxyv2, and leaves upstream
 validation/repair enabled. Consumers own their cluster and applications. There is
-no public enrollment API in PR0.
+a pure Go enrollment contract for controller-composed native sidecars.
 
 ## Local development
 
@@ -185,12 +188,13 @@ same inventory with `--acceptance=enforce`.
 
 ## Versions and delivery scope
 
-`install/versions.env` records the checked baseline from gateway
+`baseline/versions.json` is the single version source; `install/versions.env`
+is its generated installer projection. The initial baseline was extracted from gateway
 `ea2480bd755acfa2e433a36edc6d77014b283da2`: kind v0.33.0, Kubernetes v1.34.11,
 Istio 1.31.0, kubectl v1.33.9, Helm v4.3.0, curl 8.10.1 and httpbin v2.15.0.
 Image references pin multi-platform digests. The httpbin image follows the
 [Istio 1.31.0 sample](https://github.com/istio/istio/blob/1.31.0/samples/httpbin/httpbin.yaml).
-Archive/tool checksums are stored locally in version files; CI downloads only
+Archive/tool checksums are generated from the same version source; CI downloads only
 those pinned inputs. Godog is pinned to v0.16.0 in the single Go module.
 
 CI separates `make check` from an Ubuntu `make e2e` job and uploads only the safe

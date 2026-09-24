@@ -1,22 +1,23 @@
+# Generated from baseline/versions.json; do not edit.
 apiVersion: operator.tigera.io/v1
 kind: ImageSet
 metadata:
   name: calico-v3.32.2
 spec:
   images:
-    - image: calico/key-cert-provisioner
-      digest: sha256:aa66718e7f331ec6ff565c2b6100fcf47c6ba6c22d52fe3c86e68689303330bb
-    - image: calico/node
-      digest: sha256:99b03fe91e8bfbcb153ae65ef4b701b24ce541ffdd74ff314eb041096008f7fd
     - image: calico/cni
       digest: sha256:0ef740bc587f25565905adf1d1f61a7faff0d571c449c6bdd789feed743d3ef7
-    - image: calico/kube-controllers
-      digest: sha256:7870b67ebb13fabc3005252b44fe6e78b21635649bd3072b80afa1684b6565d0
-    - image: calico/typha
-      digest: sha256:62b67d7ec399335e9e1a5681c793796126aee8764467308b2c9c4b0f60ce8a01
-    - image: calico/pod2daemon-flexvol
-      digest: sha256:a759b3914d5898a66751ee57871199ef870d0f42bdc3f9115fe1ded3b1a6ce01
     - image: calico/csi
       digest: sha256:a4e6bc025131e754a96d9f4432bfc5e6cd42add6d59a701750988186d51d9b1f
+    - image: calico/key-cert-provisioner
+      digest: sha256:aa66718e7f331ec6ff565c2b6100fcf47c6ba6c22d52fe3c86e68689303330bb
+    - image: calico/kube-controllers
+      digest: sha256:7870b67ebb13fabc3005252b44fe6e78b21635649bd3072b80afa1684b6565d0
+    - image: calico/node
+      digest: sha256:99b03fe91e8bfbcb153ae65ef4b701b24ce541ffdd74ff314eb041096008f7fd
     - image: calico/node-driver-registrar
       digest: sha256:abbeca287aeae48927b37cef8cbc17601357b132382ca6be4deb327c2c8d9aa2
+    - image: calico/pod2daemon-flexvol
+      digest: sha256:a759b3914d5898a66751ee57871199ef870d0f42bdc3f9115fe1ded3b1a6ce01
+    - image: calico/typha
+      digest: sha256:62b67d7ec399335e9e1a5681c793796126aee8764467308b2c9c4b0f60ce8a01

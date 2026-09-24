@@ -9,14 +9,14 @@ envsubst '${PROBE_IMAGE} ${ISTIO_PROXY_IMAGE} ${ORIGIN_IP}' < "$root/test/e2e/co
 for ns in networking-egress networking-controls; do
   k -n "$ns" create configmap origin-trust --from-file=ca.pem="$state_dir/certs/ca.pem" --dry-run=client -o yaml | k apply -f -
 done
-if [[ $(jq -r '.profile' "$state_dir/environment.json") == calico-istio ]]; then k apply -f "$root/test/e2e/config/calico-egress.yaml"; fi
+if [[ $(jq -r '.profile' "$state_dir/environment.json") == calico-istio ]]; then enrollment_policy networking-egress; fi
 for CLIENT_NAME in workload intruder plain control; do
   CLIENT_NAMESPACE=networking-egress CLIENT_SA=workload INJECT=true PROTECTED=true
   case "$CLIENT_NAME" in intruder) CLIENT_SA=intruder;; plain) INJECT=false;; control) CLIENT_NAMESPACE=networking-controls CLIENT_SA=default INJECT=false PROTECTED=false;; esac
   export CLIENT_NAME CLIENT_NAMESPACE CLIENT_SA INJECT PROTECTED
   envsubst '${CLIENT_NAME} ${CLIENT_NAMESPACE} ${CLIENT_SA} ${INJECT} ${PROTECTED} ${PROBE_IMAGE}' < "$root/test/e2e/config/egress-client.yaml" | k create --dry-run=client -f - -o json > "$state_dir/client.json"
   if [[ $(jq -r .profile "$state_dir/environment.json") == calico-istio && "$PROTECTED" == true ]]; then
-    protected_pod < "$state_dir/client.json" | k apply -f -
+    if [[ "$INJECT" == true ]]; then protected_pod < "$state_dir/client.json" | k apply -f -; else protected_pod --policy-only < "$state_dir/client.json" | k apply -f -; fi
   else
     k apply -f "$state_dir/client.json"
   fi

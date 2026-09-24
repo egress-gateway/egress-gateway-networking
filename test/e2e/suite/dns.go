@@ -122,7 +122,9 @@ func evaluateDNS(dir, id string) (actual, functionality, reason string, err erro
 			return ExecutionError, "not_evaluated", "receiver health control failed", errors.New("DNS receiver not healthy")
 		}
 	}
-	attempts, arrivals := 0, 0
+	attempts, arrivals, permittedArrivals := 0, 0, 0
+	resolverAllowed := f.Mode == "resolver-direct" || f.Mode == "resolver-fallback"
+	resolverException := strings.HasPrefix(f.Mode, "resolver-") && !strings.HasSuffix(f.Mode, "-revoked")
 	nat, _ := os.ReadFile(filepath.Join(dir, "conntrack.txt"))
 	for _, name := range f.Captures {
 		packets, e := records(filepath.Join(dir, name))
@@ -138,16 +140,49 @@ func evaluateDNS(dir, id string) (actual, functionality, reason string, err erro
 				return Inconclusive, "not_evaluated", "unattributed external receiver packet; NAT ownership is unresolved", nil
 			}
 			if p.Event == "network-packet" && owned {
+				permitted := resolverException && p.Destination == tuple.External+":53" && (p.Protocol == "udp" || p.Protocol == "tcp")
 				if strings.HasPrefix(name, "source-") {
-					attempts++
+					if !permitted {
+						attempts++
+					}
 				} else {
-					arrivals++
+					if permitted && name == "receiver-external.jsonl" {
+						if p.Protocol == f.Transport {
+							permittedArrivals++
+						}
+					} else {
+						arrivals++
+					}
 				}
 			}
 		}
 	}
 	if arrivals > 0 {
 		return Violated, "not_evaluated", "protected source reached a forbidden DNS receiver", nil
+	}
+	if resolverAllowed {
+		var q dnsExchange
+		if err := readDNSJSON(dir, "query.json", &q); err != nil {
+			return Inconclusive, "not_evaluated", err.Error(), nil
+		}
+		if q.ID != id || q.Name != f.Name || q.Transport != f.Transport || q.Type != f.Type || !q.Attempted || !q.Sent {
+			return ExecutionError, "not_evaluated", "resolver query identity mismatch", nil
+		}
+		received := false
+		logs, e := records(filepath.Join(dir, "external.log"))
+		if e != nil {
+			return Inconclusive, "not_evaluated", e.Error(), nil
+		}
+		for _, p := range logs {
+			received = received || p.Event == "received" && p.Protocol == "dns" && p.ID == id && (peerIP(p.Remote) == f.Source || dnsNATOwner(string(nat), f.Source, p.Remote, tuple.External+":53"))
+		}
+		if !received || permittedArrivals == 0 || !q.Correlated || q.RCODE != "RCodeSuccess" || len(q.Answers) == 0 {
+			return Violated, "not_satisfied", "explicit resolver exception did not deliver a correlated answer", nil
+		}
+		return Satisfied, "satisfied", "explicit Pod-wide resolver exception delivered a correlated query and answer; revocation checked independently", nil
+	}
+	if strings.HasSuffix(f.Mode, "-other") && attempts == 0 {
+		return Inconclusive, "not_evaluated", "forbidden resolver probe has no observed network attempt", nil
 	}
 	if attempts > 0 {
 		matched := false
@@ -178,7 +213,7 @@ func evaluateDNS(dir, id string) (actual, functionality, reason string, err erro
 	}
 	functionality = "satisfied"
 	switch f.Mode {
-	case "capture-off-tcp", "proxy-uid-tcp", "sidecar-stopped-tcp":
+	case "capture-off-tcp", "proxy-uid-tcp", "sidecar-stopped-tcp", "resolver-direct-tcp", "resolver-fallback-tcp":
 		actual, reason, err = dnsForbiddenTCP(dir, id, f, tuple.External, string(nat))
 		return actual, "observed", reason, err
 	}
@@ -231,7 +266,7 @@ func evaluateDNS(dir, id string) (actual, functionality, reason string, err erro
 			return ExecutionError, "not_evaluated", "DNS probe produced neither a sent query nor a network attempt", errors.New("DNS probe did not reach a testable path")
 		}
 		switch f.Mode {
-		case "declared", "wildcard", "unregistered", "other-suffix", "edns":
+		case "declared", "wildcard", "unregistered", "other-suffix", "edns", "broken-dns":
 			vip := len(q.Answers) > 0
 			for _, a := range q.Answers {
 				addr, e := netip.ParseAddr(a)
@@ -462,8 +497,11 @@ func dnsRedirectedTCP(dir, id, local string) (string, string, error) {
 }
 
 func dnsNeedsRecovery(mode string) bool {
+	if strings.HasPrefix(mode, "resolver-") && !strings.HasSuffix(mode, "-revoked") {
+		return true
+	}
 	switch strings.TrimSuffix(mode, "-tcp") {
-	case "capture-off", "capture-excluded", "proxy-uid", "nameserver", "sidecar-stopped", "restart", "recreate", "bootstrap-mapped":
+	case "broken-dns", "resolver-direct", "resolver-fallback", "capture-off", "capture-excluded", "proxy-uid", "nameserver", "sidecar-stopped", "restart", "recreate", "bootstrap-mapped":
 		return true
 	}
 	return false
