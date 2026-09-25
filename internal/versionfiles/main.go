@@ -46,7 +46,7 @@ func main() {
 		if err != nil {
 			fail("%v", err)
 		}
-		if !strings.Contains(string(data), "go-version: '"+v.GoCI+"'") {
+		if err := checkWorkflow(data, v.GoCI); err != nil {
 			fail("%s: Go CI pin differs from baseline", path)
 		}
 	}
@@ -67,8 +67,22 @@ func main() {
 		}
 	}
 	data, err = os.ReadFile("install/calico/installation.yaml")
-	if err != nil || !strings.Contains(string(data), "calico-"+v.Calico["CALICO_VERSION"]) {
-		fail("Calico installation label differs from baseline")
+	if err != nil {
+		fail("%v", err)
+	}
+	if err := checkInstallation(data, v); err != nil {
+		fail("%v", err)
+	}
+	kind, err := os.ReadFile("environments/kind/cluster.yaml")
+	if err != nil {
+		fail("%v", err)
+	}
+	cni, err := os.ReadFile("install/values/istio-cni.yaml")
+	if err != nil {
+		fail("%v", err)
+	}
+	if err := checkTopology(kind, cni, v.Configuration); err != nil {
+		fail("%v", err)
 	}
 }
 

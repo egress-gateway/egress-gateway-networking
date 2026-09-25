@@ -170,11 +170,8 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 			})
 			sc.Step(`^broken DNS handling fails the normal functionality verdict and recovers$`, func() error {
 				actual, function, detail, err := evaluateDNS(dir, id)
-				if err != nil || actual != Satisfied || function != "not_satisfied" {
-					return fmt.Errorf("broken DNS must retain isolation but fail functionality: %s %s %s: %w", actual, function, detail, errors.Join(err, errors.New("unexpected compatibility verdict")))
-				}
-				observed, reason = Satisfied, "normal declared-name evaluator rejected broken DNS; isolation and functional recovery verified"
-				return nil
+				observed, reason, err = brokenDNSVerdict(actual, function, detail, err)
+				return err
 			})
 			sc.Step(`^local DNS functionality and isolation have independently correlated evidence$`, func() error {
 				var functionality string

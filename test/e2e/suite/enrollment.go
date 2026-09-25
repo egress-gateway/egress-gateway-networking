@@ -191,3 +191,16 @@ func (s *Suite) rejectMissingListener(ctx context.Context, dir, id string) (resu
 	}
 	return nil
 }
+
+func brokenDNSVerdict(actual, functionality, reason string, err error) (string, string, error) {
+	if err != nil {
+		return actual, reason, err
+	}
+	if actual == Violated {
+		return actual, reason, nil
+	}
+	if actual != Satisfied || functionality != "not_satisfied" {
+		return actual, reason, fmt.Errorf("broken DNS must retain isolation but fail functionality: %s %s %s", actual, functionality, reason)
+	}
+	return Satisfied, "normal declared-name evaluator rejected broken DNS; isolation and functional recovery verified", nil
+}

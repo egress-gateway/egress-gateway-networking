@@ -44,9 +44,16 @@ func main() {
 			t.Fatal(err)
 		}
 	}
+	sum, err := os.ReadFile(filepath.Join(root, "go.sum"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(filepath.Join(dir, "go.sum"), sum, 0600); err != nil {
+		t.Fatal(err)
+	}
 	cmd := exec.CommandContext(t.Context(), "go", "build", "-mod=mod", "-o", filepath.Join(dir, "consumer"), ".")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off")
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOPROXY=off", "GOTOOLCHAIN=local")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("external build: %v\n%s", err, out)
 	}
