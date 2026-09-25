@@ -63,6 +63,9 @@ func TestTopologyMatchesBaseline(t *testing.T) {
 	}{
 		{"valid", string(kind), string(cni), true},
 		{"proxy-disabled", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: none", 1), string(cni), false},
+		{"proxy-ipvs", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: ipvs", 1), string(cni), false},
+		{"proxy-nftables", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: nftables", 1), string(cni), false},
+		{"proxy-empty", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: ", 1), string(cni), false},
 		{"wrong-family", strings.Replace(string(kind), "ipFamily: ipv4", "ipFamily: ipv6", 1), string(cni), false},
 		{"unchained", string(kind), strings.Replace(string(cni), "chained: true", "chained: false", 1), false},
 	} {

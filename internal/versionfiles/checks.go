@@ -45,6 +45,9 @@ func checkTopology(kind, cni []byte, v baseline.Configuration) error {
 	if !strings.EqualFold(cluster.Networking.IPFamily, v.IPFamily) || cluster.Networking.KubeProxyMode == "" || (cluster.Networking.KubeProxyMode != "none") != v.KubeProxy {
 		return errors.New("kind IP family or kube-proxy configuration differs from baseline")
 	}
+	if v.KubeProxy && cluster.Networking.KubeProxyMode != "iptables" {
+		return errors.New("enabled kube-proxy must use the supported iptables mode")
+	}
 	if plugin.Chained == nil || *plugin.Chained != v.Chained {
 		return errors.New("Istio CNI chaining differs from baseline")
 	}
