@@ -21,6 +21,7 @@ type Executor func(context.Context, string, ...string) error
 type Environment struct {
 	Root, State, Artifacts, Cluster string
 	Profile                         string
+	ProxySpec                       string
 	PolicyTest                      func(context.Context) error
 	Keep                            bool
 	Execute                         Executor
@@ -156,9 +157,14 @@ func (e *Environment) setup(ctx context.Context, runPolicy bool) error {
 			}
 		}
 	}
-	if err = e.Execute(ctx, "install/scripts/install.sh",
+	installArgs := []string{}
+	if e.Profile == "calico-istio" {
+		installArgs = append(installArgs, "--enrollment-label", "networking.egress/enabled")
+	}
+	installArgs = append(installArgs,
 		"--kubeconfig", filepath.Join(e.State, "kubeconfig"), "--context", "kind-"+e.Cluster,
-		"--cache-dir", filepath.Join(e.Root, ".cache"), "--istiod-values", filepath.Join(e.Root, "test/e2e/config/istiod-values.yaml")); err != nil {
+		"--cache-dir", filepath.Join(e.Root, ".cache"), "--istiod-values", filepath.Join(e.Root, "test/e2e/config/istiod-values.yaml"))
+	if err = e.Execute(ctx, "install/scripts/install.sh", installArgs...); err != nil {
 		return err
 	}
 	if err = e.phase(ctx, "test/e2e/scripts/deploy.sh"); err != nil {
@@ -201,7 +207,7 @@ func (e *Environment) fingerprint() (string, error) {
 	if e.Profile == "calico-istio" {
 		fmt.Fprintln(h, e.Profile)
 	}
-	for _, dir := range []string{"install", "environments/kind", "test/e2e/config", "test/e2e/probe", "go.mod", "go.sum"} {
+	for _, dir := range []string{"install", "environments/kind", "test/e2e/config", "test/e2e/probe", "go.mod", "go.sum", "baseline", "enrollment", "test/e2e/consumer"} {
 		err := filepath.WalkDir(filepath.Join(e.Root, dir), func(path string, d fs.DirEntry, err error) error {
 			if errors.Is(err, os.ErrNotExist) {
 				return nil
@@ -226,6 +232,13 @@ func (e *Environment) fingerprint() (string, error) {
 		if err != nil {
 			return "", err
 		}
+	}
+	if e.ProxySpec != "" {
+		data, err := os.ReadFile(e.ProxySpec)
+		if err != nil {
+			return "", err
+		}
+		fmt.Fprintf(h, "proxy-spec\x00%s", data)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }

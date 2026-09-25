@@ -9,6 +9,14 @@ dns_role="${dns_lane:+dns-$dns_lane}"
 dns_role=${dns_role:-origin}
 need_id
 case "$phase" in
+ resolver-allow)
+  ip=$(jq -r .istiod "$dns_state/addresses.json")
+  external_ip=$(cat "$dns_state/external-ip")
+  "$NETWORKING_E2E_BIN" render-fixture --policy --namespace "$DNS_NAMESPACE" --istiod-ip "$ip" --resolver "$external_ip" | k apply -f -
+  ;;
+ resolver-revoke)
+  enrollment_policy "$DNS_NAMESPACE"
+  ;;
  discover)
   receiver_snapshot "$dns_role" > "$artifacts/external-before.json"
   external_ip=$(jq -r .origin "$state_dir/egress.json")
@@ -30,11 +38,13 @@ case "$phase" in
   if [[ -n "$dns_lane" ]]; then external_ip=$(cat "$dns_state/external-ip"); fi
   envsubst '${DNS_CLIENT} ${PROBE_IMAGE} ${ISTIOD_IP} ${DNS_NAMESPACE}' < "$root/test/e2e/config/dns-client.yaml" | k create --dry-run=client -f - -o json | protected_pod |
     jq --arg mode "$target" --arg external "$external_ip" '
-      if $mode=="capture-off" then .metadata.annotations["proxy.istio.io/config"]="holdApplicationUntilProxyStarts: false\nproxyMetadata:\n  ISTIO_META_DNS_CAPTURE: \"false\"\n"
+      if ($mode=="capture-off" or ($mode|startswith("resolver-direct"))) then (.spec.initContainers[]|select(.name=="istio-proxy")|.env[]|select(.name=="ISTIO_META_DNS_CAPTURE")|.value)="false" | (.spec.initContainers[]|select(.name=="istio-proxy")|.env[]|select(.name=="PROXY_CONFIG")|.value) |= (fromjson | .proxyMetadata.ISTIO_META_DNS_CAPTURE="false" | tojson)
+      elif $mode=="broken-dns" then (.spec.initContainers[]|select(.name=="istio-proxy")|.env[]|select(.name=="DNS_PROXY_ADDR")|.value)="localhost:16053"
       elif $mode=="capture-excluded" then .metadata.annotations["traffic.sidecar.istio.io/excludeOutboundPorts"]="53"
       elif $mode=="proxy-uid" then .spec.containers[0].securityContext.runAsUser=1337
       elif $mode=="nameserver" then .spec.dnsPolicy="None"|.spec.dnsConfig={nameservers:[$external]}
-      else . end' | k create -f -
+      else . end
+      | if $mode=="resolver-fallback-other" then .spec.dnsPolicy="ClusterFirst" | del(.spec.dnsConfig) elif ($mode|startswith("resolver-")) then .spec.dnsPolicy="None" | .spec.dnsConfig={nameservers:[$external]} else . end' | k create -f -
   ;;
  source)
   source_ns=$target source_pod=$client

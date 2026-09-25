@@ -68,9 +68,13 @@ gated_pod() {
       elif $mode == "init" then .spec.initContainers += [{name:"first-probe",image:$image,imagePullPolicy:"Never",args:["request","--protocol",$protocol,"--target",$address,"--id",$id,"--duration","3s"],securityContext:{runAsUser:10000,allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]}}}]
       else (.spec.containers[]|select(.name=="probe")|.args)=["request","--protocol",$protocol,"--target",$address,"--id",$id,"--duration","3s"] end
   ' > "$state_dir/fault-pod.json"
-  k label namespace networking-egress istio-injection=disabled --overwrite >/dev/null
-  k create -f "$state_dir/fault-pod.json"
-  k label namespace networking-egress istio-injection=enabled --overwrite >/dev/null
+  if [[ $(jq -r .profile "$state_dir/environment.json") == calico-istio ]]; then
+    k create -f "$state_dir/fault-pod.json"
+  else
+    k label namespace networking-egress istio-injection=disabled --overwrite >/dev/null
+    k create -f "$state_dir/fault-pod.json"
+    k label namespace networking-egress istio-injection=enabled --overwrite >/dev/null
+  fi
 }
 
 capture_start() {

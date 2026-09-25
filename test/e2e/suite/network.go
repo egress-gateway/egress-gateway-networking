@@ -259,6 +259,22 @@ func evaluateNetwork(dir, id, contract string, expected egressInputs) (string, s
 		return Satisfied, "endpoint address retained both proxy hops and expected mTLS identities", nil
 	}
 	if contract == "capture" {
+		for _, name := range []string{"packets.jsonl", "sender.jsonl"} {
+			ps, err := records(filepath.Join(dir, name))
+			if err != nil {
+				return Inconclusive, "missing capture window", err
+			}
+			if err = completeCapture(ps); err != nil {
+				return Inconclusive, "incomplete capture window", err
+			}
+		}
+		present, err := captureListener(dir)
+		if err != nil {
+			return Inconclusive, "missing redirect listener observation", err
+		}
+		if !present {
+			return Violated, "required TCP redirect listener 15001 is absent", nil
+		}
 		data, err := os.ReadFile(filepath.Join(dir, "workload.log"))
 		if err != nil {
 			return "", "", err
@@ -455,4 +471,32 @@ func evaluateBlockedStartup(dir, id string, f networkFacts) (string, string, err
 		}
 	}
 	return Satisfied, "Calico policy refusal kept the sandbox and application stopped beyond the wait deadline; recovery verified", nil
+}
+
+func captureListener(dir string) (bool, error) {
+	var state struct {
+		Listeners []struct {
+			Address struct {
+				Socket struct {
+					Port uint32 `json:"port_value"`
+				} `json:"socket_address"`
+			} `json:"local_address"`
+		} `json:"listener_statuses"`
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "capture-listeners.json"))
+	if err != nil {
+		return false, err
+	}
+	if err = json.Unmarshal(data, &state); err != nil {
+		return false, err
+	}
+	if len(state.Listeners) == 0 {
+		return false, errors.New("no active listener snapshot")
+	}
+	for _, l := range state.Listeners {
+		if l.Address.Socket.Port == 15001 {
+			return true, nil
+		}
+	}
+	return false, nil
 }

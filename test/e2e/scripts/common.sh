@@ -32,7 +32,14 @@ k() { kubectl --kubeconfig "$state_dir/kubeconfig" --context "kind-$cluster" --r
 pod() { k -n networking-test get pods -l "app=$1" -o json | jq -er '.items | select(length == 1) | .[0].metadata.name'; }
 need_id() { [[ "$test_id" =~ ^[a-z0-9-]+$ ]] || { echo 'valid --test-id required' >&2; exit 2; }; }
 
-# Shared rendering is opt-in for the strict profile's protected Pods.
+# The static caller resolves infrastructure; pure enrollment never queries it.
 protected_pod() {
-  "$BASH" "$root/install/scripts/protected-pod.sh" --kubeconfig "$state_dir/kubeconfig" --context "kind-$cluster"
+  local ip
+  ip=$(k -n istio-system get service istiod -o jsonpath='{.spec.clusterIP}')
+  "$NETWORKING_E2E_BIN" render-fixture --istiod-ip "$ip" "$@"
+}
+enrollment_policy() {
+  local ns=$1 ip=''
+  if [[ "$ns" != networking-np ]]; then ip=$(k -n istio-system get service istiod -o jsonpath='{.spec.clusterIP}'); fi
+  "$NETWORKING_E2E_BIN" render-fixture --policy --namespace "$ns" --istiod-ip "$ip" | k apply -f -
 }

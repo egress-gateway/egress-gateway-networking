@@ -37,7 +37,7 @@ func TestDNSLaneInventory(t *testing.T) {
 			count++
 		}
 	}
-	if count != 53 {
+	if count != 64 {
 		t.Fatalf("DNS coverage changed: %d", count)
 	}
 	s := &Suite{Root: root, Report: &Report{Profile: "calico-istio"}}

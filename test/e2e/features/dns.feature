@@ -98,3 +98,27 @@ Feature: Sidecar DNS capture and strict egress isolation
       | D6-02 | recreate cannot misroute cached synthetic addresses | recreate | udp | A |
       | D6-03 | stale-vip cannot misroute cached synthetic addresses | stale-vip | udp | A |
 
+
+    @enrollment @dns-lane-records
+    Examples: explicit controlled resolver exceptions and revocation
+      | id | description | mode | transport | type |
+      | E2-01 | Application direct UDP resolver exception is revocable | resolver-direct | udp | A |
+      | E2-02 | Application direct TCP resolver exception is revocable | resolver-direct | tcp | A |
+      | E2-03 | Sidecar UDP fallback resolver exception is revocable | resolver-fallback | udp | A |
+      | E2-04 | Sidecar TCP fallback resolver exception is revocable | resolver-fallback | tcp | A |
+
+    @enrollment @dns-lane-destinations
+    Examples: resolver exceptions do not broaden other paths
+      | id | description | mode | transport | type |
+      | E2-05 | Direct UDP cannot use another resolver | resolver-direct-other | udp | A |
+      | E2-06 | Direct TCP cannot use another resolver | resolver-direct-other | tcp | A |
+      | E2-07 | UDP fallback cannot use another resolver | resolver-fallback-other | udp | A |
+      | E2-08 | TCP fallback cannot use another resolver | resolver-fallback-other | tcp | A |
+      | E2-09 | Direct capture bypass cannot use the resolver's other TCP port | resolver-direct-tcp | tcp | A |
+      | E2-10 | Captured traffic cannot use the resolver's other TCP port | resolver-fallback-tcp | tcp | A |
+
+  @enrollment @dns-lane-bypass
+  Scenario: E3-02 Broken DNS handling fails normal declared-name functionality
+    Given the isolated local DNS configuration is ready
+    When the DNS operation "broken-dns" uses "udp" and "A"
+    Then broken DNS handling fails the normal functionality verdict and recovers

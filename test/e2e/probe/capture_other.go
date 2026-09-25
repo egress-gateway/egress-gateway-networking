@@ -15,3 +15,7 @@ func capture(context.Context, *flag.FlagSet, []string) error {
 func traceDrops(context.Context, *flag.FlagSet, []string) error {
 	return errors.New("drop observation requires the owned Linux node")
 }
+
+func privileges(*flag.FlagSet, []string) error {
+	return errors.New("privilege acceptance requires Linux")
+}

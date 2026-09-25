@@ -145,12 +145,33 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 			operation := func(script string) error {
 				return s.Execute(ctx, "test/e2e/scripts/"+script+".sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
 			}
+			sc.Step(`^a missing redirect listener fails the normal capture verdict and recovers$`, func() error {
+				err := s.rejectMissingListener(ctx, dir, id)
+				if err == nil {
+					observed, reason = Satisfied, "normal TCP capture evaluator rejected missing listener and verified recovery"
+				}
+				return err
+			})
+			sc.Step(`^the enrollment operation "([^"]+)" preserves the startup contract$`, func(mode string) error {
+				if err := s.enrollmentOperation(ctx, dir, id, mode); err != nil {
+					return err
+				}
+				var err error
+				observed, reason, err = evaluateEnrollment(dir, id, mode)
+				return err
+			})
+			sc.Step(`^the independent enrollment bindings are ready$`, func() error { return operation("enrollment-up") })
 			sc.Step(`^the isolated local DNS configuration is ready$`, func() error {
 				return s.Execute(ctx, "test/e2e/scripts/dns-up.sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id, "--dns-lane", s.dnsLane)
 			})
 			sc.Step(`^the DNS operation "([^"]+)" uses "([^"]+)" and "([^"]+)"$`, func(mode, transport, qtype string) error {
 				networkFault = dnsNeedsRecovery(mode)
 				return s.runDNS(ctx, dir, id, currentCase, mode, transport, qtype)
+			})
+			sc.Step(`^broken DNS handling fails the normal functionality verdict and recovers$`, func() error {
+				actual, function, detail, err := evaluateDNS(dir, id)
+				observed, reason, err = brokenDNSVerdict(actual, function, detail, err)
+				return err
 			})
 			sc.Step(`^local DNS functionality and isolation have independently correlated evidence$`, func() error {
 				var functionality string

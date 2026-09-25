@@ -26,6 +26,7 @@ if [[ -n "$dns_lane" ]]; then
 fi
 ISTIOD_IP=$(k -n istio-system get service istiod -o jsonpath='{.spec.clusterIP}')
 envsubst '${PROBE_IMAGE} ${DNS_NAMESPACE}' < "$root/test/e2e/config/dns.yaml" | k apply -f - > "$artifacts/dns-setup.txt"
+enrollment_policy "$DNS_NAMESPACE"
 k -n "$DNS_NAMESPACE" create secret generic receiver-certificates --from-file=tls.crt="$state_dir/certs/tls.crt" --from-file=tls.key="$state_dir/certs/tls.key" --dry-run=client -o json | k apply -f - >/dev/null
 k -n "$DNS_NAMESPACE" create configmap dns-trust --from-file=ca.pem="$state_dir/certs/ca.pem" --dry-run=client -o json | k apply -f - >/dev/null
 k -n "$DNS_NAMESPACE" wait pod/receiver pod/control --for=condition=Ready --timeout=90s > /dev/null
@@ -40,5 +41,5 @@ until k -n "$DNS_NAMESPACE" exec client -c probe -- /probe dns --query one.origi
   sleep 0.2
 done
 jq -n --arg istiod "$ISTIOD_IP" --arg receiver "$DNS_RECEIVER_IP" '{istiod:$istiod,receiver:$receiver}' > "$dns_state/addresses.json"
-k -n "$DNS_NAMESPACE" get pods -o json | jq '[.items[]|{name:.metadata.name,uid:.metadata.uid,ip:.status.podIP,images:([.status.containerStatuses[]?|{name,image,imageID}])}]' > "$dns_state/images.json"
+k -n "$DNS_NAMESPACE" get pods -o json | jq '[.items[]|{name:.metadata.name,uid:.metadata.uid,ip:.status.podIP,images:([.status.containerStatuses[]?,.status.initContainerStatuses[]?|{name,image,imageID}])}]' > "$dns_state/images.json"
 printf 'ready\n' > "$dns_state/ready"

@@ -24,6 +24,7 @@ type dnsRunner struct {
 	observerContext                                                                        context.Context
 	cancelObservers                                                                        context.CancelFunc
 	facts                                                                                  dnsFacts
+	resolverIntent                                                                         bool
 	created, suspendIntent, restartIntent, staleIntent                                     bool
 	phases                                                                                 []PhaseTiming
 }
@@ -95,7 +96,7 @@ func (r *dnsRunner) run(ctx context.Context, recovery bool) (result error) {
 			r.question = r.id + ".unregistered.invalid"
 		case "search":
 			r.question = r.id + ".external.test." + r.s.dnsNamespace() + ".svc.cluster.local"
-		case "http-one", "https-one", "restart", "recreate", "bootstrap-mapped":
+		case "http-one", "https-one", "restart", "recreate", "bootstrap-mapped", "broken-dns":
 			r.question = "one.origin.test"
 		case "http-two", "https-two":
 			r.question = "two.origin.test"
@@ -110,6 +111,14 @@ func (r *dnsRunner) run(ctx context.Context, recovery bool) (result error) {
 	}
 	if err := r.stage("health-before", func() error { return r.health(ctx, "before") }); err != nil {
 		return err
+	}
+	if r.mode == "broken-dns" {
+		if err := r.queryFrom(ctx, r.s.dnsNamespace(), "client", "before-functional.json", "one.origin.test", r.id+"-before", "udp", "A", "", false, 7*time.Second); err != nil {
+			return err
+		}
+		if err := r.validVIP("before-functional.json"); err != nil {
+			return err
+		}
 	}
 	if r.mode == "restart" || r.mode == "recreate" {
 		if err := r.query(ctx, "cached.json", "one.origin.test", r.id+"-cache", "udp", "A", "", false, 7*time.Second); err != nil {
@@ -171,7 +180,15 @@ func (r *dnsRunner) run(ctx context.Context, recovery bool) (result error) {
 		return err
 	}
 	if err := r.stage("collect", func() error {
-		if err := r.saveK(ctx, "pod-after.json", "-n", r.ns, "get", "pod", r.pod, "-o", "json"); err != nil {
+		snapshot, err := r.k(ctx, "-n", r.ns, "get", "pod", r.pod, "-o", "json")
+		if err != nil {
+			return err
+		}
+		var after dnsPod
+		if err = json.Unmarshal(snapshot, &after); err != nil {
+			return err
+		}
+		if err = r.write("pod-after.json", after); err != nil {
 			return err
 		}
 		if err := r.saveK(ctx, "receiver.log", "-n", r.s.dnsNamespace(), "logs", "receiver", "--since-time="+r.started); err != nil {
@@ -187,6 +204,11 @@ func (r *dnsRunner) run(ctx context.Context, recovery bool) (result error) {
 		}
 		if err = r.write("application-receiver.json", map[string]string{"uid": p.Metadata.UID, "ip": p.Status.PodIP}); err != nil {
 			return err
+		}
+		if strings.HasPrefix(r.mode, "resolver-") {
+			if err := r.saveCommand(ctx, "external.log", "docker", "logs", "--since", r.started, r.discovery.ExternalContainer); err != nil {
+				return err
+			}
 		}
 		return r.operation(ctx, "snapshot", "", "")
 	}); err != nil {
@@ -205,7 +227,7 @@ func (r *dnsRunner) run(ctx context.Context, recovery bool) (result error) {
 		if err := r.validVIP("recovery.json"); err != nil {
 			return err
 		}
-		child := &dnsRunner{s: r.s, dir: filepath.Join(r.dir, "recovery-isolation"), id: r.id + "-recovery-isolation", mode: "unregistered", transport: r.transport, qtype: "A"}
+		child := &dnsRunner{s: r.s, dir: filepath.Join(r.dir, "recovery-isolation"), id: r.id + "-recovery-isolation", mode: dnsRecoveryMode(r.mode), transport: r.transport, qtype: "A"}
 		if err := child.run(ctx, false); err != nil {
 			return err
 		}
@@ -221,7 +243,7 @@ func (r *dnsRunner) run(ctx context.Context, recovery bool) (result error) {
 	return r.write("dns-facts.json", r.facts)
 }
 func (r *dnsRunner) forbiddenTCP() bool {
-	return slices.Contains([]string{"capture-off-tcp", "proxy-uid-tcp", "sidecar-stopped-tcp"}, r.mode)
+	return slices.Contains([]string{"capture-off-tcp", "proxy-uid-tcp", "sidecar-stopped-tcp", "resolver-direct-tcp", "resolver-fallback-tcp"}, r.mode)
 }
 func (r *dnsRunner) app() bool {
 	return strings.HasPrefix(r.mode, "http-") || strings.HasPrefix(r.mode, "https-") || slices.Contains([]string{"raw-tcp", "stale-vip", "restart", "recreate"}, r.mode)
@@ -326,7 +348,13 @@ func (r *dnsRunner) ready(ctx context.Context, ns, pod, old string) error {
 }
 func (r *dnsRunner) prepareSource(ctx context.Context) error {
 	fault := strings.TrimSuffix(r.mode, "-tcp")
-	if slices.Contains([]string{"bootstrap-mapped", "capture-off", "capture-excluded", "proxy-uid", "nameserver", "recreate"}, fault) {
+	if strings.HasPrefix(r.mode, "resolver-") && !strings.HasSuffix(r.mode, "-revoked") {
+		r.resolverIntent = true
+		if err := r.operation(ctx, "resolver-allow", "", ""); err != nil {
+			return err
+		}
+	}
+	if strings.HasPrefix(r.mode, "resolver-") || slices.Contains([]string{"broken-dns", "bootstrap-mapped", "capture-off", "capture-excluded", "proxy-uid", "nameserver", "recreate"}, fault) {
 		r.pod = "dns-" + r.id
 		r.created = true
 		if err := r.operation(ctx, "create", fault, ""); err != nil {
@@ -362,11 +390,26 @@ func (r *dnsRunner) prepareSource(ctx context.Context) error {
 		return err
 	}
 	switch fault {
-	case "capture-off":
+	case "broken-dns":
+		if err := r.saveK(ctx, "broken-dns.log", "-n", r.ns, "logs", r.pod, "-c", "istio-proxy", "--tail=100"); err != nil {
+			return err
+		}
+		logs, err := os.ReadFile(filepath.Join(r.dir, "broken-dns.log"))
+		if err != nil {
+			return err
+		}
+		if !strings.Contains(string(logs), "DNS server on 127.0.0.1:16053") || !strings.Contains(string(redirects), "15053") {
+			return errors.New("broken DNS listener fault not observed")
+		}
+	case "capture-off", "resolver-direct", "resolver-direct-revoked", "resolver-direct-other":
 		for line := range strings.SplitSeq(string(redirects), "\n") {
 			if strings.Contains(line, "--dport 53") && strings.Contains(line, "15053") {
 				return errors.New("DNS capture disable did not take effect")
 			}
+		}
+	case "resolver-fallback", "resolver-fallback-revoked", "resolver-fallback-other":
+		if !strings.Contains(string(redirects), "--dport 53") || !strings.Contains(string(redirects), "15053") {
+			return errors.New("fallback fixture did not enable DNS capture")
 		}
 	case "capture-excluded":
 		if pod.Annotations["traffic.sidecar.istio.io/excludeOutboundPorts"] != "53" || !strings.Contains(string(redirects), "--dport 53 -j RETURN") {
@@ -546,7 +589,7 @@ func (r *dnsRunner) probe(ctx context.Context) error {
 	default:
 		target := ""
 		switch r.mode {
-		case "service":
+		case "service", "resolver-direct-other":
 			target = r.discovery.Service + ":53"
 		case "endpoint":
 			target = r.discovery.Endpoints[0].IP + ":53"
@@ -554,7 +597,7 @@ func (r *dnsRunner) probe(ctx context.Context) error {
 			target = r.discovery.External + ":53"
 		}
 		timeout := 7 * time.Second
-		if slices.Contains([]string{"capture-off", "capture-excluded", "proxy-uid", "sidecar-stopped"}, r.mode) {
+		if slices.Contains([]string{"capture-off", "capture-excluded", "proxy-uid", "sidecar-stopped", "resolver-direct", "resolver-direct-revoked", "resolver-direct-other", "broken-dns"}, r.mode) {
 			timeout = 2 * time.Second
 		}
 		err := r.query(ctx, "query.json", r.question, r.id, r.transport, r.qtype, target, r.mode == "edns", timeout)
@@ -573,6 +616,13 @@ func (r *dnsRunner) probe(ctx context.Context) error {
 }
 func (r *dnsRunner) restore(ctx context.Context) error {
 	var errs []error
+	if r.resolverIntent {
+		err := r.operation(ctx, "resolver-revoke", "", "")
+		if err == nil {
+			r.resolverIntent = false
+		}
+		errs = append(errs, err)
+	}
 	if r.suspendIntent {
 		b, err := os.ReadFile(filepath.Join(r.dir, "suspended-pids"))
 		if errors.Is(err, os.ErrNotExist) {
@@ -614,4 +664,11 @@ func (r *dnsRunner) restore(ctx context.Context) error {
 		errs = append(errs, err)
 	}
 	return errors.Join(errs...)
+}
+
+func dnsRecoveryMode(mode string) string {
+	if mode == "resolver-direct" || mode == "resolver-fallback" {
+		return mode + "-revoked"
+	}
+	return "unregistered"
 }
