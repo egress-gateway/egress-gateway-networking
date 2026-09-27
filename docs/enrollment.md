@@ -48,6 +48,52 @@ initialization. The caller owns runtime command, image, private volumes and
 startup/readiness checks. Their implementation requires actual compatibility
 acceptance: a syntactically valid custom image is not certified by generation.
 
+## Effective security and re-expansion
+
+The final composed Pod is checked, including applications, business initialization,
+trusted preparation, the proxy and generated validation. Container Seccomp and
+AppArmor settings take precedence over Pod settings. An effective explicit
+`Unconfined` profile is rejected. Omission retains the existing behavior: this is
+consistency hardening, **not** a guarantee that the kernel uses a restricted
+profile. The library neither inserts `RuntimeDefault` nor enables node
+`seccompDefault`. An unsafe profile inherited by generated validation is rejected,
+even if every caller-declared container overrides it safely.
+
+Legacy `container.apparmor.security.beta.kubernetes.io/<container>` annotations
+are checked alongside the effective structured AppArmor profile. Equivalent
+`runtime/default` or `localhost/<profile>` declarations are accepted; conflicting
+declarations are rejected. Unrelated metadata is preserved.
+
+Any non-nil `runtimeClassName`, including an empty string, is unsupported. Presence
+of either `k8s.v1.cni.cncf.io/networks` or `v1.multus-cni.io/default-network` is
+rejected, including empty annotation values. These alternative runtime/network
+paths have not been accepted by this contract.
+
+Istio 1.31 CNI reads `istio-proxy.args` starting with `proxy <type>` and skips
+capture for nonempty types other than `sidecar`. Expansion rejects those types,
+including `router` and unknown values. Recognizable `pilot-agent proxy <type>`
+commands split between `command` and `args` are checked too. Leading root flags
+must use inline `--flag=value` form; ambiguous split flag/value forms are rejected. Arbitrary wrapper
+scripts and image entrypoints are not interpreted; their behavior remains the
+consumer's runtime compatibility responsibility.
+
+After Kubernetes API defaulting, expansion preserves the defaulted Pod. The
+fixed validation container comparison permits only enumerated Kubernetes 1.34
+defaults: image-dependent pull policy, termination-message path/policy, and
+default fields of already-present probes/HTTP actions. API materialization of a
+legacy AppArmor annotation is equivalent only to that exact structured profile. It does not synthesize
+probes, ignore security fields, reorder arrays or discard extra configuration.
+Normalization is comparison-only and never changes emitted resources.
+Admission-added mounts (including ServiceAccount token automounts) are not field
+defaults: a validation container with such extra mounts is still rejected.
+Consumers requiring re-expansion should disable automatic token mounting and
+compose any required token volumes explicitly on the runtime containers.
+
+These checks apply to the object passed to expansion. The consumer must arrange
+final admission validation and RBAC so later mutation, alternate admission paths,
+or policy/label writes cannot bypass the contract. Expansion alone is not a
+continuous runtime enforcement or webhook-ordering guarantee.
+
 ## Installation and webhook ordering
 
 Install with `--enrollment-label example.org/enabled`. The installer configures
