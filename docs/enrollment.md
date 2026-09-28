@@ -69,8 +69,8 @@ ensure a business container never shares a Gateway identity or volume.
 ## Final object and lifecycle boundary
 
 Host network/PID/IPC, shared process namespace, hostPath, hostPort, additional network
-attachments, explicit unsupported RuntimeClass, ephemeral containers, unsafe root
-inheritance, sysctls and effective unconfined profiles are rejected. Profile omission
+attachments, any explicit `runtimeClassName` (including an empty string), ephemeral
+containers, unsafe root inheritance, sysctls and effective unconfined profiles are rejected. Profile omission
 does not certify that a node's runtime default is restrictive. Kubernetes API validity
 and final mutation/admission checks remain platform responsibilities.
 
