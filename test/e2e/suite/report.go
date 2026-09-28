@@ -26,38 +26,36 @@ const (
 )
 
 type CaseResult struct {
-	Phases                []PhaseTiming `json:"phases,omitempty"`
-	FunctionalityRequired bool          `json:"functionality_required,omitzero"`
-	Functionality         string        `json:"functionality,omitempty"`
-	ID                    string        `json:"id"`
-	Name                  string        `json:"name"`
-	Requirement           string        `json:"requirement"`
-	Expected              string        `json:"baseline_expected"`
-	Actual                string        `json:"security_result"`
-	Acceptance            string        `json:"acceptance"`
-	Reason                string        `json:"reason,omitempty"`
-	Evidence              string        `json:"evidence,omitempty"`
-	DurationSeconds       float64       `json:"duration_seconds"`
+	FunctionalityRequired bool    `json:"functionality_required,omitzero"`
+	Functionality         string  `json:"functionality,omitempty"`
+	ID                    string  `json:"id"`
+	Name                  string  `json:"name"`
+	Requirement           string  `json:"requirement"`
+	Expected              string  `json:"expected"`
+	Actual                string  `json:"security_result"`
+	Acceptance            string  `json:"acceptance"`
+	Reason                string  `json:"reason,omitempty"`
+	Evidence              string  `json:"evidence,omitempty"`
+	DurationSeconds       float64 `json:"duration_seconds"`
 }
 
 type Report struct {
-	mu             sync.Mutex
-	Mode           string            `json:"acceptance_mode"`
-	Profile        string            `json:"profile"`
-	SHA            string            `json:"sha"`
-	Dirty          bool              `json:"dirty"`
-	RunID          string            `json:"run_id"`
-	Started        time.Time         `json:"started"`
-	Finished       time.Time         `json:"finished,omitzero"`
-	BaselineInputs string            `json:"baseline_inputs,omitempty"`
-	Configuration  map[string]string `json:"configuration,omitempty"`
-	InputDigest    string            `json:"input_digest,omitempty"`
-	RunError       string            `json:"run_error,omitempty"`
-	Security       string            `json:"security_verdict"`
-	Acceptance     string            `json:"acceptance"`
-	Cases          []CaseResult      `json:"cases"`
-	Operations     []OperationTiming `json:"operations,omitempty"`
-	Dir            string            `json:"-"`
+	mu            sync.Mutex
+	Mode          string            `json:"acceptance_mode"`
+	Profile       string            `json:"profile"`
+	SHA           string            `json:"sha"`
+	Dirty         bool              `json:"dirty"`
+	RunID         string            `json:"run_id"`
+	Started       time.Time         `json:"started"`
+	Finished      time.Time         `json:"finished,omitzero"`
+	Configuration map[string]string `json:"configuration,omitempty"`
+	InputDigest   string            `json:"input_digest,omitempty"`
+	RunError      string            `json:"run_error,omitempty"`
+	Security      string            `json:"security_verdict"`
+	Acceptance    string            `json:"acceptance"`
+	Cases         []CaseResult      `json:"cases"`
+	Operations    []OperationTiming `json:"operations,omitempty"`
+	Dir           string            `json:"-"`
 }
 
 type OperationTiming struct {
@@ -70,41 +68,15 @@ type OperationTiming struct {
 func caseID(name string) string { id, _, _ := strings.Cut(name, " "); return id }
 
 func NewReport(root, dir, mode, sha string, dirty bool) (*Report, error) {
-	return NewProfileReport(root, dir, "istio-only", mode, sha, dirty)
+	return NewProfileReport(root, dir, "calico", mode, sha, dirty)
 }
 
 func NewProfileReport(root, dir, profile, mode, sha string, dirty bool) (*Report, error) {
-	if profile != "istio-only" && profile != "calico-istio" {
-		return nil, fmt.Errorf("unknown profile %q", profile)
-	}
-	if profile == "calico-istio" && mode != "enforce" {
-		return nil, errors.New("calico-istio requires enforce acceptance")
-	}
-	if mode != "baseline" && mode != "enforce" {
-		return nil, fmt.Errorf("unknown acceptance mode %q", mode)
+	if profile != "calico" || mode != "enforce" {
+		return nil, fmt.Errorf("only calico/enforce is supported; legacy profiles were removed")
 	}
 	r := &Report{Mode: mode, Profile: profile, SHA: sha, Dirty: dirty, Dir: dir, RunID: filepath.Base(dir), Started: time.Now().UTC()}
-	var baseline struct {
-		Profile string            `json:"profile"`
-		Inputs  string            `json:"inputs"`
-		Cases   map[string]string `json:"cases"`
-	}
-	data, err := os.ReadFile(filepath.Join(root, "test/e2e/baselines/istio-only.json"))
-	if err == nil {
-		err = json.Unmarshal(data, &baseline)
-	}
-	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		return nil, err
-	}
-	if profile == "istio-only" && baseline.Profile != "" && baseline.Profile != r.Profile {
-		return nil, errors.New("baseline profile mismatch")
-	}
-	r.BaselineInputs = baseline.Inputs
-	r.Configuration = map[string]string{"topology": "single-node IPv4; kind default network; chained Istio CNI; sidecar + official gateway"}
-	if profile == "calico-istio" {
-		r.Configuration["topology"] = "single-node IPv4; Calico iptables/VXLAN; kube-proxy; chained Istio CNI; isolated NP fixture"
-		r.Configuration["CALICO_VERSION"] = versions.Current().Calico["CALICO_VERSION"]
-	}
+	r.Configuration = map[string]string{"topology": "single-node IPv4; Calico iptables/VXLAN; kube-proxy; no governance proxy", "CALICO_VERSION": versions.Current().Calico["CALICO_VERSION"]}
 	if run := os.Getenv("GITHUB_RUN_ID"); run != "" {
 		r.Configuration["ci_run"] = run
 		r.Configuration["ci_attempt"] = os.Getenv("GITHUB_RUN_ATTEMPT")
@@ -112,7 +84,7 @@ func NewProfileReport(root, dir, profile, mode, sha string, dirty bool) (*Report
 	if versions, err := os.ReadFile(filepath.Join(root, "install/versions.env")); err == nil {
 		for line := range strings.SplitSeq(string(versions), "\n") {
 			key, value, ok := strings.Cut(line, "=")
-			if ok && (key == "KIND_VERSION" || key == "KIND_IMAGE" || key == "ISTIO_VERSION" || key == "HELM_VERSION") {
+			if ok && (key == "KIND_VERSION" || key == "KIND_IMAGE") {
 				r.Configuration[key] = value
 			}
 		}
@@ -133,7 +105,7 @@ func NewProfileReport(root, dir, profile, mode, sha string, dirty bool) (*Report
 			ids[id] = true
 			requirement := strings.TrimPrefix(p.Name, id+" ")
 			for _, step := range p.Steps {
-				if rest, ok := strings.CutPrefix(step.Text, `the egress contract "`); ok {
+				if rest, ok := strings.CutPrefix(step.Text, `the network contract "`); ok {
 					requirement, _, _ = strings.Cut(rest, `"`)
 				}
 			}
@@ -141,34 +113,17 @@ func NewProfileReport(root, dir, profile, mode, sha string, dirty bool) (*Report
 			for _, tag := range p.Tags {
 				required = required || tag.Name == "@dns-functional"
 			}
-			r.Cases = append(r.Cases, CaseResult{FunctionalityRequired: required, ID: id, Name: p.Name, Requirement: requirement, Expected: baseline.Cases[id], Actual: NotRun})
+			r.Cases = append(r.Cases, CaseResult{FunctionalityRequired: required, ID: id, Name: p.Name, Requirement: requirement, Expected: Satisfied, Actual: NotRun})
 		}
 	}
 	if len(r.Cases) == 0 {
 		return nil, errors.New("empty acceptance inventory")
 	}
-	for id := range baseline.Cases {
-		if profile == "istio-only" && !ids[id] {
-			return nil, fmt.Errorf("baseline contains removed case %s", id)
-		}
-	}
 	return r, nil
 }
 
 func (r *Report) CaseAccepted(c CaseResult) bool {
-	if c.FunctionalityRequired && c.Functionality != "satisfied" {
-		return false
-	}
-	if (strings.HasPrefix(c.ID, "P0-") || c.Requirement == "allow" || c.Requirement == "gateway") && c.Actual != Satisfied {
-		return false
-	}
-	if c.Actual != Satisfied && c.Actual != Violated {
-		return false
-	}
-	if r.Mode == "enforce" {
-		return c.Actual == Satisfied
-	}
-	return (c.Expected == Satisfied || c.Expected == Violated) && c.Actual == c.Expected
+	return r.Mode == "enforce" && c.Actual == Satisfied && (!c.FunctionalityRequired || c.Functionality == Satisfied)
 }
 
 func (r *Report) Accepted() bool {
@@ -179,14 +134,6 @@ func (r *Report) Accepted() bool {
 		if !r.CaseAccepted(c) {
 			return false
 		}
-	}
-	if r.Mode == "baseline" && r.Profile == "istio-only" {
-		for _, c := range r.Cases {
-			if c.Actual == Violated {
-				return true
-			}
-		}
-		return false
 	}
 	return true
 }
@@ -290,7 +237,7 @@ func (r *Report) Markdown() string {
 	if r.Configuration["ci_run"] != "" {
 		fmt.Fprintf(&b, "CI run: `%s` · attempt: `%s`\n\n", escape(r.Configuration["ci_run"]), escape(r.Configuration["ci_attempt"]))
 	}
-	fmt.Fprintf(&b, "Environment: %s · kind %s · Istio %s · node `%s`\n\n", escape(r.Configuration["topology"]), escape(r.Configuration["KIND_VERSION"]), escape(r.Configuration["ISTIO_VERSION"]), escape(r.Configuration["KIND_IMAGE"]))
+	fmt.Fprintf(&b, "Environment: %s · kind %s · Calico %s · node `%s`\n\n", escape(r.Configuration["topology"]), escape(r.Configuration["KIND_VERSION"]), escape(r.Configuration["CALICO_VERSION"]), escape(r.Configuration["KIND_IMAGE"]))
 	if r.Configuration["kernel"] != "" {
 		fmt.Fprintf(&b, "Runtime: %s\n\n", escape(r.Configuration["kernel"]))
 	}
@@ -299,7 +246,7 @@ func (r *Report) Markdown() string {
 	if r.RunError != "" {
 		fmt.Fprintf(&b, "Run failure: %s\n\n", escape(r.RunError))
 	}
-	b.WriteString("Baseline acceptance does not certify fail-closed egress. IPv6, SCTP and other IP protocols are outside this IPv4 TCP/UDP profile.\n\n| Case / scenario | Security requirement | Actual security result | Functionality | Baseline expected | Acceptance | Duration | Evidence / reason |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("Results cover the tested IPv4 TCP/UDP scope only. Unsupported-path closure is tracked separately in #13.\n\n| Case / scenario | Security requirement | Actual security result | Functionality | Expected | Acceptance | Duration | Evidence / reason |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, c := range r.Cases {
 		mark := "❌ FAIL"
 		if r.CaseAccepted(c) {
@@ -327,13 +274,6 @@ func (r *Report) Markdown() string {
 			fmt.Fprintf(&b, "| %s | %.3fs |\n", escape(c.ID), c.DurationSeconds)
 		}
 	}
-	fmt.Fprint(&b, "\n<details><summary>DNS case phase wall times</summary>\n\n| Case | Phase | Duration | Error |\n|---|---|---:|---|\n")
-	for _, c := range r.Cases {
-		for _, p := range c.Phases {
-			fmt.Fprintf(&b, "| %s | %s | %.3fs | %s |\n", escape(c.ID), escape(p.Name), p.Seconds, escape(p.Error))
-		}
-	}
-	fmt.Fprint(&b, "\n</details>\n")
 	if len(r.Operations) > 0 {
 		fmt.Fprint(&b, "\n<details><summary>Phase and operation timings</summary>\n\n| Operation | Duration | Error |\n|---|---:|---|\n")
 		for _, op := range r.Operations {
@@ -364,7 +304,7 @@ func (r *Report) junit() []byte {
 		Cases    []item   `xml:"testcase"`
 	}{Name: "networking-" + r.Mode}
 	for _, c := range r.Cases {
-		x := item{Name: c.Name, Class: c.ID, Time: c.DurationSeconds, Output: fmt.Sprintf("security=%s functionality=%s baseline=%s evidence=%s reason=%s", c.Actual, c.Functionality, c.Expected, c.Evidence, c.Reason)}
+		x := item{Name: c.Name, Class: c.ID, Time: c.DurationSeconds, Output: fmt.Sprintf("security=%s functionality=%s expected=%s evidence=%s reason=%s", c.Actual, c.Functionality, c.Expected, c.Evidence, c.Reason)}
 		if !r.CaseAccepted(c) {
 			x.Failure = &failure{Message: c.Actual, Text: x.Output}
 			if c.FunctionalityRequired && c.Functionality != "satisfied" {
@@ -379,7 +319,7 @@ func (r *Report) junit() []byte {
 		s.Failures++
 	}
 	if s.Failures == 0 && !r.Accepted() {
-		s.Cases = append(s.Cases, item{Name: "suite acceptance", Class: "environment", Failure: &failure{Message: "run is not finalized or reviewed baseline contract is not met"}})
+		s.Cases = append(s.Cases, item{Name: "suite acceptance", Class: "environment", Failure: &failure{Message: "run is not finalized or enforcement contract is not met"}})
 		s.Failures++
 	}
 	s.Tests = len(s.Cases)
@@ -388,20 +328,7 @@ func (r *Report) junit() []byte {
 }
 
 // profileTags is shared by inventory and execution, including every OR branch.
-func profileTags(profile, tags string) string {
-	exclude := "~@calico"
-	if profile == "calico-istio" {
-		exclude = "~@istio-only"
-	}
-	if tags == "" {
-		return exclude
-	}
-	clauses := strings.Split(tags, ",")
-	for i := range clauses {
-		clauses[i] = exclude + " && " + clauses[i]
-	}
-	return strings.Join(clauses, ",")
-}
+func profileTags(profile, tags string) string { return tags }
 
 // Update serializes incremental evidence and its persisted report together.
 func (r *Report) Update(change func(*Report)) error {

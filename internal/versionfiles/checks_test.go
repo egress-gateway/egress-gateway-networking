@@ -53,24 +53,19 @@ func TestTopologyMatchesBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cni, err := os.ReadFile("../../install/values/istio-cni.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
 	for _, tc := range []struct {
-		name, kind, cni string
-		valid           bool
+		name, kind string
+		valid      bool
 	}{
-		{"valid", string(kind), string(cni), true},
-		{"proxy-disabled", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: none", 1), string(cni), false},
-		{"proxy-ipvs", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: ipvs", 1), string(cni), false},
-		{"proxy-nftables", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: nftables", 1), string(cni), false},
-		{"proxy-empty", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: ", 1), string(cni), false},
-		{"wrong-family", strings.Replace(string(kind), "ipFamily: ipv4", "ipFamily: ipv6", 1), string(cni), false},
-		{"unchained", string(kind), strings.Replace(string(cni), "chained: true", "chained: false", 1), false},
+		{"valid", string(kind), true},
+		{"proxy-disabled", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: none", 1), false},
+		{"proxy-ipvs", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: ipvs", 1), false},
+		{"proxy-nftables", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: nftables", 1), false},
+		{"proxy-empty", strings.Replace(string(kind), "kubeProxyMode: iptables", "kubeProxyMode: ", 1), false},
+		{"wrong-family", strings.Replace(string(kind), "ipFamily: ipv4", "ipFamily: ipv6", 1), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := checkTopology([]byte(tc.kind), []byte(tc.cni), baseline.Current().Configuration); (err == nil) != tc.valid {
+			if err := checkTopology([]byte(tc.kind), baseline.Current().Configuration); (err == nil) != tc.valid {
 				t.Fatalf("%v", err)
 			}
 		})

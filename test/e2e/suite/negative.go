@@ -15,8 +15,8 @@ import (
 var ErrNegativeDetected = errors.New("negative control correctly detected the deliberate security violation; isolation restored")
 
 func NewNegativeReport(root, dir, profile, mode, sha string, dirty bool) (*Report, error) {
-	if profile != "calico-istio" || mode != "enforce" {
-		return nil, errors.New("negative control requires calico-istio + enforce")
+	if profile != "calico" || mode != "enforce" {
+		return nil, errors.New("negative control requires calico + enforce")
 	}
 	r, err := NewProfileReport(root, dir, profile, mode, sha, dirty)
 	if err != nil {
@@ -73,7 +73,7 @@ func (s *Suite) RunNegative(ctx context.Context) error {
 }
 
 func (r *Report) NegativeControlConfirmed() bool {
-	if r.Configuration["purpose"] == "" || r.Profile != "calico-istio" || r.Mode != "enforce" || r.Finished.IsZero() || r.RunError != ErrNegativeDetected.Error() || len(r.Cases) != 1 || r.Cases[0].ID != "X-ALLOW" || r.Cases[0].Actual != Violated {
+	if r.Configuration["purpose"] == "" || r.Profile != "calico" || r.Mode != "enforce" || r.Finished.IsZero() || r.RunError != ErrNegativeDetected.Error() || len(r.Cases) != 1 || r.Cases[0].ID != "X-ALLOW" || r.Cases[0].Actual != Violated {
 		return false
 	}
 	var control struct {

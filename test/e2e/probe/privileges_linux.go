@@ -19,8 +19,8 @@ func privileges(f *flag.FlagSet, args []string) error {
 		return errors.New("id required")
 	}
 	uid, gid := os.Getuid(), os.Getgid()
-	gidErr := unix.Setgid(1337)
-	uidErr := unix.Setuid(1337)
+	gidErr := unix.Setgid(2001)
+	uidErr := unix.Setuid(2001)
 	fd, err := unix.Socket(unix.AF_INET, unix.SOCK_DGRAM, 0)
 	if err != nil {
 		return err

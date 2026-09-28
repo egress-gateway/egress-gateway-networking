@@ -15,8 +15,5 @@ download() {
 }
 download kind "https://github.com/kubernetes-sigs/kind/releases/download/$KIND_VERSION/kind-linux-amd64" "$KIND_LINUX_AMD64_SHA256"
 download kubectl "https://dl.k8s.io/release/$KUBECTL_VERSION/bin/linux/amd64/kubectl" "$KUBECTL_LINUX_AMD64_SHA256"
-download helm.tar.gz "https://get.helm.sh/helm-$HELM_VERSION-linux-amd64.tar.gz" "$HELM_LINUX_AMD64_SHA256"
-tar -xzf "$destination/helm.tar.gz" -C "$destination" linux-amd64/helm
-mv "$destination/linux-amd64/helm" "$destination/helm"
-chmod +x "$destination/kind" "$destination/kubectl" "$destination/helm"
+chmod +x "$destination/kind" "$destination/kubectl"
 [[ -z "${GITHUB_PATH:-}" ]] || printf '%s\n' "$destination" >> "$GITHUB_PATH"

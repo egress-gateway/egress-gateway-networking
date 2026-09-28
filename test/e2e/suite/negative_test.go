@@ -14,7 +14,7 @@ func TestNegativeControlCannotHideReportOrRecoveryFailures(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			r, err := NewNegativeReport(root, t.TempDir(), "calico-istio", "enforce", "test", true)
+			r, err := NewNegativeReport(root, t.TempDir(), "calico", "enforce", "test", true)
 			if err != nil {
 				t.Fatal(err)
 			}

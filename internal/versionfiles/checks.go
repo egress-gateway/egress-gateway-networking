@@ -28,18 +28,14 @@ func disabled(condition any) bool {
 	return s == "false"
 }
 
-func checkTopology(kind, cni []byte, v baseline.Configuration) error {
+func checkTopology(kind []byte, v baseline.Configuration) error {
 	var cluster struct {
 		Networking struct {
 			IPFamily      string `yaml:"ipFamily"`
 			KubeProxyMode string `yaml:"kubeProxyMode"`
 		}
 	}
-	var plugin struct{ Chained *bool }
 	if err := yaml.Unmarshal(kind, &cluster); err != nil {
-		return err
-	}
-	if err := yaml.Unmarshal(cni, &plugin); err != nil {
 		return err
 	}
 	if !strings.EqualFold(cluster.Networking.IPFamily, v.IPFamily) || cluster.Networking.KubeProxyMode == "" || (cluster.Networking.KubeProxyMode != "none") != v.KubeProxy {
@@ -47,9 +43,6 @@ func checkTopology(kind, cni []byte, v baseline.Configuration) error {
 	}
 	if v.KubeProxy && cluster.Networking.KubeProxyMode != "iptables" {
 		return errors.New("enabled kube-proxy must use the supported iptables mode")
-	}
-	if plugin.Chained == nil || *plugin.Chained != v.Chained {
-		return errors.New("Istio CNI chaining differs from baseline")
 	}
 	return nil
 }

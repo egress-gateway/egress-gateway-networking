@@ -14,9 +14,8 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - {name: Istio baseline, profile: istio-only, acceptance: baseline, experiment: acceptance}
-          - {name: Calico enforce, profile: calico-istio, acceptance: enforce, experiment: acceptance}
-          - {name: Additive allow negative control, profile: calico-istio, acceptance: enforce, experiment: negative}
+          - {name: Calico enforce, profile: calico, acceptance: enforce, experiment: acceptance}
+          - {name: Additive allow negative control, profile: calico, acceptance: enforce, experiment: negative}
     env:
       E2E_ARGS: --profile=${{ matrix.profile }} --acceptance=${{ matrix.acceptance }}
       EXPERIMENT: ${{ matrix.experiment }}

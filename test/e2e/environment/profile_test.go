@@ -1,56 +1,55 @@
 package environment
 
 import (
-	"context"
-	"errors"
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 )
 
-func TestCalicoRunsNetworkPolicyBDDBeforeInstallingIstio(t *testing.T) {
+func TestCalicoBootstrapOrder(t *testing.T) {
 	e, calls := testEnvironment(t)
-	e.Profile = "calico-istio"
-	e.PolicyTest = func(context.Context) error { *calls = append(*calls, "np-bdd"); return nil }
 	if err := e.Run(t.Context(), "e2e"); err != nil {
 		t.Fatal(err)
 	}
-	primary := slices.Index(*calls, "install/scripts/calico-install.sh")
-	np := slices.Index(*calls, "np-bdd")
-	mesh := slices.Index(*calls, "install/scripts/install.sh")
-	if primary < 0 || np <= primary || mesh <= np {
-		t.Fatalf("wrong bootstrap order: %v", *calls)
+	install := slices.Index(*calls, "install/scripts/install.sh")
+	fixtures := slices.Index(*calls, "test/e2e/scripts/np-up.sh")
+	suite := slices.Index(*calls, "suite")
+	if install < 0 || fixtures <= install || suite <= fixtures {
+		t.Fatalf("unsafe order: %v", *calls)
 	}
 }
-
-func TestFailedPolicyBDDStopsBeforeIstioAndDiagnoses(t *testing.T) {
-	e, calls := testEnvironment(t)
-	e.Profile = "calico-istio"
-	e.PolicyTest = func(context.Context) error { return errors.New("NP-08 received forbidden packet") }
-	if err := e.Run(t.Context(), "e2e"); err == nil {
-		t.Fatal("NP failure passed")
-	}
-	if slices.Contains(*calls, "install/scripts/install.sh") || slices.Contains(*calls, "suite") {
-		t.Fatalf("continued beyond failed NP: %v", *calls)
-	}
-	if !slices.Contains(*calls, "environments/kind/diagnostics.sh") {
-		t.Fatal("failure has no diagnostics")
-	}
-}
-
-func TestRetainedProfileMismatchRefusesAccessButAllowsOwnedCleanup(t *testing.T) {
+func TestLegacyRetainedProfileRefusesTestsButAllowsOwnedCleanup(t *testing.T) {
 	e, calls := testEnvironment(t)
 	if err := e.Run(t.Context(), "up"); err != nil {
 		t.Fatal(err)
 	}
+	path := filepath.Join(e.State, "environment.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var record map[string]any
+	if err = json.Unmarshal(data, &record); err != nil {
+		t.Fatal(err)
+	}
+	record["profile"] = "calico-istio"
+	data, err = json.Marshal(record)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
 	*calls = nil
-	e.Profile = "calico-istio"
-	if err := e.Run(t.Context(), "test"); err == nil {
-		t.Fatal("profile mismatch accepted")
+	if err = e.Run(t.Context(), "test"); err == nil {
+		t.Fatal("legacy profile accepted")
 	}
 	if slices.Contains(*calls, "suite") {
-		t.Fatal("mismatched environment executed tests")
+		t.Fatal("executed obsolete suite")
 	}
-	if err := e.Run(t.Context(), "down"); err != nil {
+	if err = e.Run(t.Context(), "down"); err != nil {
 		t.Fatal(err)
 	}
 }

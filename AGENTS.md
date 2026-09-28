@@ -1,8 +1,9 @@
 # Networking development
 
-- This repository owns shared Istio installation and its independent network
-  acceptance suite. It must not import gateway/controller code, custom images or
-  scripts. Those repositories consume the installation artifacts.
+- This repository owns the Kubernetes/Calico fail-closed foundation, pure enrollment
+  contract and independent acceptance suite. Gateway owns governance composition,
+  proxy/identity implementations and readiness. Controller owns Kubernetes management.
+  Do not import those repositories or require their images/tests as gates.
 - Go 1.26.0 minimum; CI uses Go 1.26.7. Apply version-appropriate Go idioms.
 - English Gherkin describes behavior. Go/Godog owns suite lifecycle and
   assertions. Shell scripts implement complete independently runnable operations.
@@ -14,9 +15,9 @@
   node ownership before access/deletion. Never delete unrelated Docker resources.
 - Keep generated state under `.e2e/state` and safe reports under `.e2e/artifacts`.
   Never commit/upload kubeconfig, Secrets, keys or complete proxy config dumps.
-- PR0 establishes HTTP/mTLS using Istio sidecars and chained CNI. PR0.5 measures
-  its not-fail-closed baseline; expected violations remain visible in per-case reports.
-  Baseline expectations change only after evidence review, never at runtime. The Istio-only profile does not
-  provide fail-closed egress. Public enrollment owns fixed network templates and
-  pure generation, not controller reconciliation or gateway runtime composition.
-  Preserve these ownership boundaries; parent V01-02 remains open.
+- Only Calico enforce is supported. No Istio baseline success mode or compatibility
+  adapter. Trusted specifications come from the platform independently of workloads.
+  Keep existing security checks and independent receiver/enforcement evidence.
+- #13 owns new protocol closure and four new TCP first-packet cases. Do not expand
+  supported security claims from a subset of passing tests. No merge/release/deploy
+  is implied by acceptance; parent V01-02 remains open.

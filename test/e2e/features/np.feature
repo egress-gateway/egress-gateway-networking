@@ -1,5 +1,5 @@
 @calico @np
-Feature: A Pod egress whitelist works without either Istio proxy
+Feature: A Pod egress whitelist works without a governance proxy
   Only the selected httpbin endpoint and TCP listener may receive traffic.
   Receivers are healthy and unrestricted at ingress.
 
@@ -17,3 +17,7 @@ Feature: A Pod egress whitelist works without either Istio proxy
       | NP-06 | UDP on the allowed Pod is isolated                | udp      | np-udp       | deny     |
       | NP-07 | Direct external TCP is isolated                   | tcp      | np-external  | deny     |
       | NP-08 | The local node receiver is isolated               | tcp      | np-node      | deny     |
+      | NP-09 | Direct external UDP is isolated                  | udp      | np-external  | deny     |
+      | NP-10 | Direct QUIC is isolated                          | quic     | np-quic      | deny     |
+      | NP-11 | Default UDP DNS is isolated                      | dns-udp  | np-dns       | deny     |
+      | NP-12 | Default TCP DNS is isolated                      | dns-tcp  | np-dns       | deny     |
