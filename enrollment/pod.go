@@ -58,6 +58,14 @@ func ExpandPod(input *core.Pod, o Options) (*core.Pod, error) {
 	if p.Spec.HostNetwork || p.Spec.HostPID || p.Spec.HostIPC || (p.Spec.ShareProcessNamespace != nil && *p.Spec.ShareProcessNamespace) {
 		return nil, fmt.Errorf("spec: shared host/process namespaces are unsupported")
 	}
+	if p.Spec.RuntimeClassName != nil {
+		return nil, fmt.Errorf("spec.runtimeClassName: unsupported runtime selection")
+	}
+	for _, key := range []string{"k8s.v1.cni.cncf.io/networks", "v1.multus-cni.io/default-network"} {
+		if _, present := p.Annotations[key]; present {
+			return nil, fmt.Errorf("metadata.annotations[%s]: unsupported network selection", key)
+		}
+	}
 	if len(p.Spec.EphemeralContainers) != 0 {
 		return nil, fmt.Errorf("spec.ephemeralContainers: unsupported")
 	}
@@ -149,6 +157,9 @@ func ExpandPod(input *core.Pod, o Options) (*core.Pod, error) {
 	if err = validateSecurity(proxy, p.Spec.SecurityContext, true, false); err != nil {
 		return nil, err
 	}
+	if err = validateProxyType(proxy); err != nil {
+		return nil, err
+	}
 	control := o.Network.Control
 	fixedEnvironment := map[string]string{"ISTIO_META_DNS_CAPTURE": "true", "ISTIO_META_INTERCEPTION_MODE": "REDIRECT", "DISABLE_ENVOY": "false", "ISTIO_DUAL_STACK": "false", "CA_ADDR": control.Hostname + ":15012", "PILOT_CERT_PROVIDER": "istiod", "DNS_PROXY_ADDR": "localhost:15053", "ISTIOD_SAN": control.Hostname}
 	for _, k := range slices.Sorted(maps.Keys(fixedEnvironment)) {
@@ -195,7 +206,7 @@ func ExpandPod(input *core.Pod, o Options) (*core.Pod, error) {
 	validation := validationContainer()
 	idx := slices.IndexFunc(p.Spec.InitContainers, func(c core.Container) bool { return c.Name == validation.Name })
 	if idx >= 0 {
-		if idx != 0 || !reflect.DeepEqual(p.Spec.InitContainers[idx], validation) {
+		if idx != 0 || !equivalentValidation(p.Spec.InitContainers[idx], validation, p.Annotations) {
 			return nil, fmt.Errorf("istio-validation: fixed first initialization contract conflicts")
 		}
 	} else {
@@ -218,6 +229,9 @@ func ExpandPod(input *core.Pod, o Options) (*core.Pod, error) {
 	}
 	if !found {
 		p.Spec.HostAliases = append(p.Spec.HostAliases, core.HostAlias{IP: control.IPv4, Hostnames: []string{control.Hostname}})
+	}
+	if err = validateProfiles(p); err != nil {
+		return nil, err
 	}
 	return p, nil
 }
@@ -329,9 +343,6 @@ func validateSecurity(c *core.Container, p *core.PodSecurityContext, proxy, prep
 	}
 	if s.ProcMount != nil && *s.ProcMount != core.DefaultProcMount {
 		return fmt.Errorf("%s.securityContext.procMount: unsupported", c.Name)
-	}
-	if s.SeccompProfile != nil && s.SeccompProfile.Type == core.SeccompProfileTypeUnconfined {
-		return fmt.Errorf("%s.securityContext.seccompProfile: unconfined unsupported", c.Name)
 	}
 	for _, p := range c.Ports {
 		if p.HostPort != 0 {

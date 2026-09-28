@@ -53,7 +53,9 @@ func main() {
 	}
 	cmd := exec.CommandContext(t.Context(), "go", "build", "-mod=mod", "-o", filepath.Join(dir, "consumer"), ".")
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOWORK=off", "GOPROXY=off", "GOTOOLCHAIN=local")
+	// Build-time dependency resolution is allowed; only generation is offline.
+	// GOPROXY=off here would depend on unrelated modules already being cached.
+	cmd.Env = append(os.Environ(), "GOWORK=off", "GOTOOLCHAIN=local")
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("external build: %v\n%s", err, out)
 	}
