@@ -175,56 +175,28 @@ func TestKernelDropMustMatchSourceInterfaceAndDestination(t *testing.T) {
 	}
 }
 
-func TestCaptureVerdictRejectsAnObservedMissingListener(t *testing.T) {
-	for _, mode := range []string{"present", "absent", "missing-observation", "loss"} {
-		t.Run(mode, func(t *testing.T) {
-			dir := t.TempDir()
-			write := func(name string, v any) {
-				t.Helper()
-				b, err := json.Marshal(v)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err = os.WriteFile(filepath.Join(dir, name), b, 0600); err != nil {
-					t.Fatal(err)
-				}
+func TestQUICControlNeedsCorrelatedReceiverTuple(t *testing.T) {
+	for _, name := range []string{"valid", "id", "port", "protected", "protocol", "ambiguous", "missing"} {
+		t.Run(name, func(t *testing.T) {
+			control := probeRecord{ID: "control", Protocol: "quic", Local: "[::]:41636", Remote: "192.0.2.10:8443", Success: true, Attempted: true}
+			receiver := []probeRecord{{Event: "received", Protocol: "HTTP/3.0", ID: "control", Remote: "192.0.2.11:41636"}}
+			switch name {
+			case "id":
+				receiver[0].ID = "other"
+			case "port":
+				receiver[0].Remote = "192.0.2.11:41637"
+			case "protected":
+				receiver[0].Remote = "10.0.0.1:41636"
+			case "protocol":
+				receiver[0].Protocol = "tcp"
+			case "ambiguous":
+				receiver = append(receiver, probeRecord{Event: "received", Protocol: "HTTP/3.0", ID: "control", Remote: "192.0.2.12:41636"})
+			case "missing":
+				receiver = nil
 			}
-			write("network.json", networkFacts{ID: "case", Protocol: "tcp", Target: "mesh-external", Phase: "capture", SourceIP: "10.1.0.2", ReceiverBefore: "stable", ReceiverAfter: "stable", Restored: true, FaultVerified: true})
-			for _, part := range []string{"before", "after"} {
-				write("control-"+part+".jsonl", probeRecord{ID: "case-control-" + part, Attempted: true, Success: true})
-			}
-			write("probe.jsonl", probeRecord{ID: "case", Attempted: true, Connected: true, Local: "10.1.0.2:1234", Remote: "192.0.2.1:9000"})
-			write("workload.log", map[string]string{"downstream_remote": "10.1.0.2:1234", "downstream_local": "192.0.2.1:9000", "upstream_cluster": "PassthroughCluster"})
-			for _, name := range []string{"packets.jsonl", "sender.jsonl"} {
-				data := "{\"event\":\"capture-ready\"}\n{\"event\":\"capture-complete\",\"dropped\":0,\"captured\":0,\"kernel_packets\":0}\n"
-				if mode == "loss" {
-					data = "{\"event\":\"capture-ready\"}\n"
-				}
-				if err := os.WriteFile(filepath.Join(dir, name), []byte(data), 0600); err != nil {
-					t.Fatal(err)
-				}
-			}
-			if mode != "missing-observation" {
-				port := 15001
-				if mode == "absent" {
-					port = 15021
-				}
-				write("capture-listeners.json", map[string]any{"listener_statuses": []any{map[string]any{"local_address": map[string]any{"socket_address": map[string]any{"port_value": port}}}}})
-			}
-			actual, reason, err := evaluateNetwork(dir, "case", "capture", egressInputs{Protocol: "tcp", Target: "mesh-external", Phase: "capture"})
-			switch mode {
-			case "present":
-				if actual != Satisfied || err != nil {
-					t.Fatalf("%s %s %v", actual, reason, err)
-				}
-			case "absent":
-				if actual != Violated || err != nil {
-					t.Fatalf("%s %s %v", actual, reason, err)
-				}
-			default:
-				if actual == Satisfied || actual == Violated {
-					t.Fatalf("evidence gap misclassified: %s %s", actual, reason)
-				}
+			tuple, err := quicControlTuple(control, receiver, "10.0.0.1")
+			if (err == nil) != (name == "valid") {
+				t.Fatalf("tuple=%s error=%v", tuple, err)
 			}
 		})
 	}

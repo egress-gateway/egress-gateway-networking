@@ -14,7 +14,7 @@ func TestAcceptanceNeverHidesErrorsOrUnexpectedResults(t *testing.T) {
 	for _, mode := range []string{"baseline", "enforce"} {
 		for _, actual := range []string{Satisfied, Violated, ExecutionError, Inconclusive, NotRun} {
 			r := Report{Mode: mode, Cases: []CaseResult{{ID: "N1-01", Expected: Violated, Actual: actual}}}
-			want := mode == "baseline" && actual == Violated || mode == "enforce" && actual == Satisfied
+			want := mode == "enforce" && actual == Satisfied
 			if got := r.CaseAccepted(r.Cases[0]); got != want {
 				t.Fatalf("mode=%s actual=%s accepted=%t want=%t", mode, actual, got, want)
 			}
@@ -28,7 +28,7 @@ func TestInventoryExpandsExamplesAndRejectsDuplicateIDs(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	feature := "Feature: coverage\n Scenario Outline: <id> probe <port>\n  Then the egress contract \"deny\" is evaluated using complete evidence for this case\n Examples:\n  | id | port |\n  | N1-01 | 443 |\n  | N1-02 | 8443 |\n"
+	feature := "Feature: coverage\n Scenario Outline: <id> probe <port>\n  Then the network contract \"deny\" is evaluated using complete evidence for this case\n Examples:\n  | id | port |\n  | N1-01 | 443 |\n  | N1-02 | 8443 |\n"
 	path := filepath.Join(dir, "test.feature")
 	if err := os.WriteFile(path, []byte(feature), 0o600); err != nil {
 		t.Fatal(err)
@@ -50,7 +50,7 @@ func TestInventoryExpandsExamplesAndRejectsDuplicateIDs(t *testing.T) {
 
 func TestReportKeepsSecurityViolationVisibleAcrossFormats(t *testing.T) {
 	dir := t.TempDir()
-	r := Report{Mode: "baseline", Profile: "istio-only", Dir: dir, Finished: time.Now(), Cases: []CaseResult{{ID: "N1-01", Name: "direct UDP", Requirement: "deny", Expected: Violated, Actual: Violated, Reason: "receiver got packet", Evidence: "N1-01/"}}}
+	r := Report{Mode: "enforce", Profile: "calico", Dir: dir, Finished: time.Now(), Cases: []CaseResult{{ID: "N1-01", Name: "direct UDP", Requirement: "deny", Expected: Violated, Actual: Violated, Reason: "receiver got packet", Evidence: "N1-01/"}}}
 	if err := r.Save(); err != nil {
 		t.Fatal(err)
 	}
@@ -58,7 +58,7 @@ func TestReportKeepsSecurityViolationVisibleAcrossFormats(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, fragment := range []string{"not fail-closed", "❌ violated", "✅ PASS", "N1-01"} {
+	for _, fragment := range []string{"❌ violated", "❌ FAIL", "N1-01"} {
 		if !strings.Contains(string(data), fragment) {
 			t.Fatalf("missing %q in %s", fragment, data)
 		}
@@ -81,7 +81,7 @@ func TestReportKeepsSecurityViolationVisibleAcrossFormats(t *testing.T) {
 	if err := xml.Unmarshal(data, &junit); err != nil {
 		t.Fatal(err)
 	}
-	if junit.Failures != 0 || len(junit.Cases) != 1 {
+	if junit.Failures != 1 || len(junit.Cases) != 1 {
 		t.Fatalf("bad baseline JUnit: %s", data)
 	}
 	r.Mode = "enforce"
@@ -155,10 +155,10 @@ func TestPhaseAndSlowestReportsUseWallTimes(t *testing.T) {
 	start := time.Now()
 	r := Report{Started: start, Finished: start.Add(3 * time.Second), Cases: []CaseResult{
 		{ID: "fast", Name: "fast", Actual: Satisfied, DurationSeconds: 1},
-		{ID: "slow", Name: "slow", Actual: Satisfied, DurationSeconds: 2, Phases: []PhaseTiming{{Name: "health-before", Seconds: 0.5}}},
+		{ID: "slow", Name: "slow", Actual: Satisfied, DurationSeconds: 2},
 	}, Operations: []OperationTiming{{Script: "parallel-a", Seconds: 2}, {Script: "parallel-b", Seconds: 2}}}
 	m := r.Markdown()
-	if !strings.Contains(m, "Suite wall time: 3.000s") || !strings.Contains(m, "| slow | health-before | 0.500s") {
+	if !strings.Contains(m, "Suite wall time: 3.000s") {
 		t.Fatal(m)
 	}
 	slow := strings.Index(m, "Slowest executed cases:")

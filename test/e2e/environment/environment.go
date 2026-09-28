@@ -21,8 +21,6 @@ type Executor func(context.Context, string, ...string) error
 type Environment struct {
 	Root, State, Artifacts, Cluster string
 	Profile                         string
-	ProxySpec                       string
-	PolicyTest                      func(context.Context) error
 	Keep                            bool
 	Execute                         Executor
 	Test                            func(context.Context) error
@@ -41,9 +39,9 @@ func (e *Environment) Run(ctx context.Context, mode string) (result error) {
 		return fmt.Errorf("unknown mode %q", mode)
 	}
 	if e.Profile == "" {
-		e.Profile = "istio-only"
+		e.Profile = "calico"
 	}
-	if e.Profile != "istio-only" && e.Profile != "calico-istio" {
+	if e.Profile != "calico" {
 		return fmt.Errorf("unknown profile %q", e.Profile)
 	}
 	create := mode == "e2e" || mode == "up"
@@ -79,7 +77,7 @@ func (e *Environment) Run(ctx context.Context, mode string) (result error) {
 				result = errors.Join(result, e.down(cleanupCtx))
 			}
 		}()
-		if err := e.setup(ctx, mode == "e2e"); err != nil {
+		if err := e.setup(ctx); err != nil {
 			return err
 		}
 	} else {
@@ -123,7 +121,7 @@ func (e *Environment) Run(ctx context.Context, mode string) (result error) {
 	return e.Test(ctx)
 }
 
-func (e *Environment) setup(ctx context.Context, runPolicy bool) error {
+func (e *Environment) setup(ctx context.Context) error {
 	inputs, err := e.fingerprint()
 	if err != nil {
 		return err
@@ -141,38 +139,16 @@ func (e *Environment) setup(ctx context.Context, runPolicy bool) error {
 	if err = e.phase(ctx, "environments/kind/verify.sh"); err != nil {
 		return err
 	}
-	if e.Profile == "calico-istio" {
-		if err = e.Execute(ctx, "install/scripts/calico-install.sh", "--kubeconfig", filepath.Join(e.State, "kubeconfig"), "--context", "kind-"+e.Cluster, "--artifacts", e.Artifacts); err != nil {
-			return err
-		}
-		if err = e.phase(ctx, "test/e2e/scripts/np-up.sh"); err != nil {
-			return err
-		}
-		if runPolicy {
-			if e.PolicyTest == nil {
-				return errors.New("Calico setup requires NP acceptance before Istio")
-			}
-			if err = e.PolicyTest(ctx); err != nil {
-				return err
-			}
-		}
-	}
-	installArgs := []string{}
-	if e.Profile == "calico-istio" {
-		installArgs = append(installArgs, "--enrollment-label", "networking.egress/enabled")
-	}
-	installArgs = append(installArgs,
-		"--kubeconfig", filepath.Join(e.State, "kubeconfig"), "--context", "kind-"+e.Cluster,
-		"--cache-dir", filepath.Join(e.Root, ".cache"), "--istiod-values", filepath.Join(e.Root, "test/e2e/config/istiod-values.yaml"))
-	if err = e.Execute(ctx, "install/scripts/install.sh", installArgs...); err != nil {
+	if err = e.Execute(ctx, "install/scripts/install.sh", "--kubeconfig", filepath.Join(e.State, "kubeconfig"), "--context", "kind-"+e.Cluster, "--artifacts", e.Artifacts); err != nil {
 		return err
 	}
-	if err = e.phase(ctx, "test/e2e/scripts/deploy.sh"); err != nil {
+	if err = e.phase(ctx, "test/e2e/scripts/np-up.sh"); err != nil {
 		return err
 	}
 	if err = e.phase(ctx, "test/e2e/scripts/verify.sh"); err != nil {
 		return err
 	}
+
 	r.Ready = true
 	return e.writeReceipt(r)
 }
@@ -204,10 +180,10 @@ func (e *Environment) down(ctx context.Context) error {
 
 func (e *Environment) fingerprint() (string, error) {
 	h := sha256.New()
-	if e.Profile == "calico-istio" {
+	if e.Profile == "calico" {
 		fmt.Fprintln(h, e.Profile)
 	}
-	for _, dir := range []string{"install", "environments/kind", "test/e2e/config", "test/e2e/probe", "go.mod", "go.sum", "baseline", "enrollment", "test/e2e/consumer"} {
+	for _, dir := range []string{"install", "environments/kind", "test/e2e/config", "test/e2e/probe", "go.mod", "go.sum", "baseline", "enrollment", "test/e2e/consumer", "test/e2e/scripts"} {
 		err := filepath.WalkDir(filepath.Join(e.Root, dir), func(path string, d fs.DirEntry, err error) error {
 			if errors.Is(err, os.ErrNotExist) {
 				return nil
@@ -232,13 +208,6 @@ func (e *Environment) fingerprint() (string, error) {
 		if err != nil {
 			return "", err
 		}
-	}
-	if e.ProxySpec != "" {
-		data, err := os.ReadFile(e.ProxySpec)
-		if err != nil {
-			return "", err
-		}
-		fmt.Fprintf(h, "proxy-spec\x00%s", data)
 	}
 	return fmt.Sprintf("%x", h.Sum(nil)), nil
 }

@@ -77,13 +77,8 @@ func main() {
 	if err != nil {
 		fail("%v", err)
 	}
-	cni, err := os.ReadFile("install/values/istio-cni.yaml")
-	if err != nil {
-		fail("%v", err)
-	}
-	if err := checkTopology(kind, cni, v.Configuration); err != nil {
+	if err := checkTopology(kind, v.Configuration); err != nil {
 		fail("%v", err)
 	}
 }
-
 func fail(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...); os.Exit(1) }

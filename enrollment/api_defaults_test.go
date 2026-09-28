@@ -18,59 +18,27 @@ func TestRealAPIDefaultingRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	var f struct {
-		ServerVersion              string
-		Input, Expanded, Defaulted core.Pod
-		Options                    enrollment.Options
+		ServerVersion    string
+		Input, Defaulted core.Pod
 	}
 	if err = json.Unmarshal(data, &f); err != nil {
 		t.Fatal(err)
 	}
 	if f.ServerVersion != "v1.34.11" {
-		t.Fatalf("unexpected server %s", f.ServerVersion)
+		t.Fatal(f.ServerVersion)
 	}
-	generated, err := enrollment.ExpandPod(&f.Input, f.Options)
+	p := &f.Defaulted
+	o := enrollment.Options{Network: enrollment.Network{Namespace: p.Namespace, Binding: "example"}, Trusted: enrollment.TrustedSpec{InitContainers: f.Input.Spec.InitContainers, Containers: f.Input.Spec.Containers, Volumes: f.Input.Spec.Volumes}}
+	before := p.DeepCopy()
+	got, err := enrollment.ExpandPod(p, o)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(generated, &f.Expanded) {
-		t.Fatal("valid pre-API output changed")
+	if !reflect.DeepEqual(p, before) {
+		t.Fatal("input mutated")
 	}
-	before := f.Defaulted.DeepCopy()
-	result, err := enrollment.ExpandPod(&f.Defaulted, f.Options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(result, before) || !reflect.DeepEqual(&f.Defaulted, before) {
-		t.Fatal("defaulted caller object changed")
-	}
-	if len(result.Spec.InitContainers) != 4 || result.Spec.InitContainers[0].Name != "istio-validation" {
-		t.Fatal("startup order changed")
-	}
-}
-
-func TestAPIAppArmorAnnotationConversion(t *testing.T) {
-	data, err := os.ReadFile("testdata/api-defaults-1.34.11.json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var f struct {
-		Options         enrollment.Options
-		LegacyDefaulted core.Pod
-	}
-	if err = json.Unmarshal(data, &f); err != nil {
-		t.Fatal(err)
-	}
-	before := f.LegacyDefaulted.DeepCopy()
-	result, err := enrollment.ExpandPod(&f.LegacyDefaulted, f.Options)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(result, before) || !reflect.DeepEqual(&f.LegacyDefaulted, before) {
-		t.Fatal("AppArmor conversion changed caller object")
-	}
-	f.LegacyDefaulted.Spec.InitContainers[0].SecurityContext.AppArmorProfile = &core.AppArmorProfile{Type: core.AppArmorProfileTypeUnconfined}
-	result, err = enrollment.ExpandPod(&f.LegacyDefaulted, f.Options)
-	if err == nil || result != nil {
-		t.Fatal("conflicting materialized AppArmor accepted")
+	again, err := enrollment.ExpandPod(got, o)
+	if err != nil || !reflect.DeepEqual(got, again) {
+		t.Fatal("defaulted expansion changed", err)
 	}
 }

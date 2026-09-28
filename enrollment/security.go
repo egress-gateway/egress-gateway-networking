@@ -54,33 +54,6 @@ func validateProfiles(p *core.Pod) error {
 	return nil
 }
 
-func validateProxyType(c *core.Container) error {
-	// Istio 1.31 CNI classifies Args, irrespective of an overridden entrypoint.
-	check := func(args []string) error {
-		if len(args) >= 2 && args[0] == "proxy" && args[1] != "" && args[1] != "sidecar" {
-			return fmt.Errorf("%s: proxy type %q skips sidecar capture", c.Name, args[1])
-		}
-		return nil
-	}
-	if err := check(c.Args); err != nil {
-		return err
-	}
-	if len(c.Command) > 0 && path.Base(c.Command[0]) == "pilot-agent" {
-		invocation := append(append([]string{}, c.Command[1:]...), c.Args...)
-		// Root flags with inline values have unambiguous argument boundaries.
-		// Split flag/value forms require knowledge of pilot-agent's full flag
-		// registry; reject them rather than guessing where the subcommand starts.
-		for len(invocation) > 0 && strings.HasPrefix(invocation[0], "--") && strings.Contains(invocation[0], "=") {
-			invocation = invocation[1:]
-		}
-		if len(invocation) > 0 && invocation[0] != "proxy" {
-			return fmt.Errorf("%s.command: explicit pilot-agent must use proxy with unambiguous inline root flags", c.Name)
-		}
-		return check(invocation)
-	}
-	return nil
-}
-
 // Only enumerate Kubernetes v1.34 container defaults. Normalization is private,
 // comparison-only, and never changes the caller's object or emitted resources.
 func equivalentContainer(a, b core.Container) bool {
@@ -145,7 +118,7 @@ func legacyAppArmor(value string) (*core.AppArmorProfile, error) {
 	}
 }
 
-func equivalentValidation(actual, expected core.Container, annotations map[string]string) bool {
+func equivalentTrusted(actual, expected core.Container, annotations map[string]string) bool {
 	// Kubernetes materializes legacy AppArmor annotations as structured fields.
 	// Only that exact profile is equivalent; other security changes remain visible.
 	if value, ok := annotations["container.apparmor.security.beta.kubernetes.io/"+expected.Name]; ok {
@@ -154,13 +127,12 @@ func equivalentValidation(actual, expected core.Container, annotations map[strin
 			return false
 		}
 		a, b := actual.DeepCopy(), expected.DeepCopy()
-		if a.SecurityContext == nil {
+		if a.SecurityContext == nil || b.SecurityContext == nil || !reflect.DeepEqual(b.SecurityContext.AppArmorProfile, profile) {
 			return false
 		}
 		if a.SecurityContext.AppArmorProfile == nil {
 			a.SecurityContext.AppArmorProfile = profile
 		}
-		b.SecurityContext.AppArmorProfile = profile
 		return equivalentContainer(*a, *b)
 	}
 	return equivalentContainer(actual, expected)

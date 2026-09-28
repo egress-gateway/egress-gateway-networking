@@ -25,7 +25,6 @@ type Configuration struct {
 	IPFamily      string `json:"ipFamily"`
 	Dataplane     string `json:"dataplane"`
 	Encapsulation string `json:"encapsulation"`
-	Chained       bool   `json:"chained"`
 	KubeProxy     bool   `json:"kubeProxy"`
 }
 

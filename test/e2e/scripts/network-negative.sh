@@ -3,7 +3,7 @@ source "$(dirname "$0")/common.sh"
 source "$(dirname "$0")/egress-lib.sh"
 source "$(dirname "$0")/calico-fault-lib.sh"
 need_id
-[[ $(jq -r .profile "$state_dir/environment.json") == calico-istio ]] || exit 2
+[[ $(jq -r .profile "$state_dir/environment.json") == calico ]] || exit 2
 printf 'negative-%s\n' "$test_id" > "$state_dir/fault-active"
 policy_added=false
 cleanup_negative() {

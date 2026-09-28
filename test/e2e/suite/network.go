@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -105,12 +106,6 @@ type networkFacts struct {
 }
 
 func evaluateNetwork(dir, id, contract string, expected egressInputs) (string, string, error) {
-	if contract == "chain" {
-		if expected != (egressInputs{Protocol: "http", Target: "mesh-routed", Phase: "primary-restart"}) {
-			return ExecutionError, "unexpected chaining case inputs", nil
-		}
-		return evaluateEgress(dir, id, "gateway", egressInputs{Protocol: "http", Target: "routed", Client: "workload", Phase: "fresh"})
-	}
 	data, err := os.ReadFile(filepath.Join(dir, "network.json"))
 	if err != nil {
 		return "", "", err
@@ -151,14 +146,7 @@ func evaluateNetwork(dir, id, contract string, expected egressInputs) (string, s
 	if attempts == 0 && contract != "startup" {
 		return Inconclusive, "no attributable application attempt", nil
 	}
-	if expected.Phase == "proxy-uid" {
-		for _, p := range probe {
-			if p.ID == id && p.Attempted && p.UID != 1337 {
-				return ExecutionError, "the bypass probe did not run with the excluded proxy UID", nil
-			}
-		}
-	}
-	if expected.Phase != "healthy" && expected.Phase != "capture" {
+	if expected.Phase != "healthy" {
 		allow, err := records(filepath.Join(dir, "recovery-allow.jsonl"))
 		if err != nil {
 			return "", "", err
@@ -206,6 +194,29 @@ func evaluateNetwork(dir, id, contract string, expected egressInputs) (string, s
 		}
 		return Satisfied, fmt.Sprintf("existing TCP persisted=%t; new-connection isolation revalidated independently; immediate established-flow revocation is not claimed", persisted), nil
 	}
+
+	if contract == "first-packet" {
+		var state struct {
+			UID, IP string
+			Created time.Time
+		}
+		data, err := os.ReadFile(filepath.Join(dir, "startup.json"))
+		if err != nil {
+			return "", "", err
+		}
+		if err = json.Unmarshal(data, &state); err != nil {
+			return "", "", err
+		}
+		if state.UID == "" || state.IP != f.SourceIP || state.Created.Before(f.FaultStart) || f.FaultEnd.IsZero() {
+			return ExecutionError, "first-packet Pod identity or observation window invalid", nil
+		}
+		for _, p := range probe {
+			if p.ID == id && p.Attempted && (p.Started.Before(state.Created) || p.Finished.After(f.FaultEnd.Add(time.Second))) {
+				return ExecutionError, "first-packet attempt outside observed Pod lifetime", nil
+			}
+		}
+		contract = "deny"
+	}
 	if contract == "startup" {
 		if attempts == 0 {
 			return evaluateBlockedStartup(dir, id, f)
@@ -249,53 +260,6 @@ func evaluateNetwork(dir, id, contract string, expected egressInputs) (string, s
 		}
 		return Satisfied, "correlated response from the whitelisted tuple", nil
 	}
-	if contract == "gateway" {
-		if successes != attempts {
-			return Violated, "gateway endpoint did not return all correlated responses", nil
-		}
-		if err := gatewayHostEvidence(dir, id, expected.Protocol, "gateway-endpoint.test", probe); err != nil {
-			return Inconclusive, err.Error(), nil
-		}
-		return Satisfied, "endpoint address retained both proxy hops and expected mTLS identities", nil
-	}
-	if contract == "capture" {
-		for _, name := range []string{"packets.jsonl", "sender.jsonl"} {
-			ps, err := records(filepath.Join(dir, name))
-			if err != nil {
-				return Inconclusive, "missing capture window", err
-			}
-			if err = completeCapture(ps); err != nil {
-				return Inconclusive, "incomplete capture window", err
-			}
-		}
-		present, err := captureListener(dir)
-		if err != nil {
-			return Inconclusive, "missing redirect listener observation", err
-		}
-		if !present {
-			return Violated, "required TCP redirect listener 15001 is absent", nil
-		}
-		data, err := os.ReadFile(filepath.Join(dir, "workload.log"))
-		if err != nil {
-			return "", "", err
-		}
-		for line := range strings.SplitSeq(string(data), "\n") {
-			var hop struct {
-				Remote  string `json:"downstream_remote"`
-				Local   string `json:"downstream_local"`
-				Cluster string `json:"upstream_cluster"`
-			}
-			if json.Unmarshal([]byte(line), &hop) != nil {
-				continue
-			}
-			for _, p := range probe {
-				if p.ID == id && p.Attempted && p.Connected && p.Local != "" && hop.Remote == p.Local && hop.Local == p.Remote && hop.Cluster != "" && hop.Cluster != "-" {
-					return Satisfied, "the local workload Envoy accepted the application's raw TCP connection with the original destination", nil
-				}
-			}
-		}
-		return Inconclusive, "local Envoy has not recorded the raw TCP source connection", nil
-	}
 	if contract == "deny" {
 		if successes > 0 {
 			return Violated, "forbidden application response", nil
@@ -329,9 +293,20 @@ func evaluateNetwork(dir, id, contract string, expected egressInputs) (string, s
 					if p.ID != id+"-control-"+part || !p.Success || p.Local == "" {
 						continue
 					}
-					controls[p.Local] = true
+					tuple := p.Local
+					if p.Protocol == "quic" {
+						receiver, err := records(filepath.Join(dir, "receiver.log"))
+						if err != nil {
+							return "", "", err
+						}
+						tuple, err = quicControlTuple(p, receiver, f.SourceIP)
+						if err != nil {
+							return Inconclusive, err.Error(), nil
+						}
+					}
+					controls[tuple] = true
 					for _, r := range packets {
-						seen = seen || r.Event == "network-packet" && r.Remote == p.Local
+						seen = seen || r.Event == "network-packet" && r.Remote == tuple && (p.Protocol != "quic" || r.Destination == p.Remote)
 					}
 				}
 				if !seen {
@@ -473,30 +448,33 @@ func evaluateBlockedStartup(dir, id string, f networkFacts) (string, string, err
 	return Satisfied, "Calico policy refusal kept the sandbox and application stopped beyond the wait deadline; recovery verified", nil
 }
 
-func captureListener(dir string) (bool, error) {
-	var state struct {
-		Listeners []struct {
-			Address struct {
-				Socket struct {
-					Port uint32 `json:"port_value"`
-				} `json:"socket_address"`
-			} `json:"local_address"`
-		} `json:"listener_statuses"`
-	}
-	data, err := os.ReadFile(filepath.Join(dir, "capture-listeners.json"))
+// QUIC's client socket may report [::]:port. Use the correlated HTTP/3 receiver
+// record to recover its actual source, retaining the client port and target tuple.
+func quicControlTuple(control probeRecord, receiver []probeRecord, protected string) (string, error) {
+	local, err := netip.ParseAddrPort(control.Local)
 	if err != nil {
-		return false, err
+		return "", fmt.Errorf("invalid QUIC control source: %w", err)
 	}
-	if err = json.Unmarshal(data, &state); err != nil {
-		return false, err
+	target, err := netip.ParseAddrPort(control.Remote)
+	if err != nil || target.Addr().IsUnspecified() {
+		return "", fmt.Errorf("invalid QUIC control destination")
 	}
-	if len(state.Listeners) == 0 {
-		return false, errors.New("no active listener snapshot")
-	}
-	for _, l := range state.Listeners {
-		if l.Address.Socket.Port == 15001 {
-			return true, nil
+	tuple := ""
+	for _, r := range receiver {
+		if r.Event != "received" || r.ID != control.ID || r.Protocol != "HTTP/3.0" {
+			continue
 		}
+		remote, err := netip.ParseAddrPort(r.Remote)
+		if err != nil || remote.Addr().IsUnspecified() || remote.Addr().String() == protected || remote.Port() != local.Port() || (!local.Addr().IsUnspecified() && local.Addr() != remote.Addr()) {
+			return "", fmt.Errorf("QUIC control receiver source mismatch")
+		}
+		if tuple != "" && tuple != r.Remote {
+			return "", fmt.Errorf("ambiguous QUIC control receiver source")
+		}
+		tuple = r.Remote
 	}
-	return false, nil
+	if tuple == "" {
+		return "", fmt.Errorf("missing correlated QUIC receiver record")
+	}
+	return tuple, nil
 }

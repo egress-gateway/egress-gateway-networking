@@ -1,10 +1,10 @@
 apiVersion: v1
 kind: Namespace
-metadata: {name: networking-np, labels: {istio-injection: disabled}}
+metadata: {name: networking-np}
 ---
 apiVersion: v1
 kind: Namespace
-metadata: {name: networking-np-other, labels: {istio-injection: disabled}}
+metadata: {name: networking-np-other}
 ---
 apiVersion: v1
 kind: Pod
@@ -14,11 +14,15 @@ metadata:
   labels: {app: client, networking.egress/protected: 'true'}
 spec:
   automountServiceAccountToken: false
+  volumes:
+    - name: trust
+      configMap: {name: probe-trust}
   containers:
     - name: probe
       image: ${PROBE_IMAGE}
       imagePullPolicy: Never
       args: [idle]
+      volumeMounts: [{name: trust, mountPath: /trust, readOnly: true}]
       securityContext: {runAsUser: 10000, runAsNonRoot: true, allowPrivilegeEscalation: false, capabilities: {drop: [ALL]}, seccompProfile: {type: RuntimeDefault}}
 ---
 apiVersion: v1

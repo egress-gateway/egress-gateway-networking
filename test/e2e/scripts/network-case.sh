@@ -4,42 +4,38 @@ source "$(dirname "$0")/common.sh"
 source "$(dirname "$0")/egress-lib.sh"
 source "$(dirname "$0")/calico-fault-lib.sh"
 need_id
-if [[ "$phase" == felix-new || "$phase" == felix-init ]]; then
+if [[ "$phase" == felix-new || "$phase" == felix-init || "$phase" == first-app || "$phase" == first-init ]]; then
   exec "$BASH" "$root/test/e2e/scripts/network-startup.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id" --protocol "$protocol" --target "$target" --phase "$phase"
-fi
-if [[ "$phase" == primary-restart ]]; then
-  exec "$BASH" "$root/test/e2e/scripts/network-primary-restart.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id"
 fi
 if [[ "$phase" == existing-revoke ]]; then
   exec "$BASH" "$root/test/e2e/scripts/network-existing.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id"
 fi
-[[ "$(jq -r .profile "$state_dir/environment.json")" == calico-istio ]] || exit 2
-case "$phase" in healthy|capture|proxy-uid|exclusion|felix-stopped|felix-recovery|revoke) ;; *) echo "unsupported network phase: $phase" >&2; exit 2;; esac
+[[ "$(jq -r .profile "$state_dir/environment.json")" == calico ]] || exit 2
+case "$phase" in healthy|runtime-stopped|runtime-restarted|felix-stopped|felix-recovery|revoke) ;; *) echo "unsupported network phase: $phase" >&2; exit 2;; esac
 source_ns=networking-np source_pod=client
 receiver_ns=networking-np receiver_pod=httpbin receiver_container=httpbin
 port=8080 httpbin=(--httpbin)
 control=(k -n networking-np-other exec control -- /probe)
 started=$(node_stamp)
-if [[ "$target" != np-* && "$target" != enrollment-* ]]; then
-  source_ns=networking-egress; source_pod=$(epod "$source_ns" plain)
-  httpbin=()
-fi
 case "$target" in
-  enrollment-a-own|enrollment-a-other|enrollment-b-own|enrollment-b-other)
+  enrollment-a-own|enrollment-a-other|enrollment-b-own|enrollment-b-other|enrollment-trusted-own|enrollment-trusted-other)
     source_ns=networking-enrollment; source_pod=a
     [[ "$target" != enrollment-b-* ]] || source_pod=b
+    [[ "$target" != enrollment-trusted-* ]] || source_pod=trusted
     receiver_pod=httpbin
-    if [[ "$target" == enrollment-a-other || "$target" == enrollment-b-own ]]; then receiver_pod=other; fi
+    if [[ "$target" == enrollment-trusted-other || "$target" == enrollment-a-other || "$target" == enrollment-b-own ]]; then receiver_pod=other; fi
     ip=$(k -n "$receiver_ns" get pod "$receiver_pod" -o jsonpath='{.status.podIP}')
     ;;
   np-service) ip=$(k -n networking-np get service httpbin -o jsonpath='{.spec.clusterIP}'); port=8000 ;;
   np-ip|np-wrong|np-udp) ip=$(k -n networking-np get pod httpbin -o jsonpath='{.status.podIP}');;
   np-other) receiver_pod=other; ip=$(k -n networking-np get pod other -o jsonpath='{.status.podIP}');;
   np-cross) receiver_ns=networking-np-other; ip=$(k -n "$receiver_ns" get pod httpbin -o jsonpath='{.status.podIP}');;
-  np-external)
+  np-external|np-dns|np-quic)
     receiver_owned origin; receiver_owned quic
     ip=$(jq -r .origin "$state_dir/egress.json"); port=9000
     [[ "$protocol" != udp ]] || port=9001
+    [[ "$target" != np-dns ]] || port=53
+    [[ "$target" != np-quic ]] || port=8443
     receiver_ns='' receiver_pod='' receiver_container=''; httpbin=()
     control=(docker exec "$cluster-quic" /probe)
     ;;
@@ -47,48 +43,6 @@ case "$target" in
     receiver_ns=networking-np-other receiver_pod=node receiver_container=probe
     ip=$(k get node "$cluster-control-plane" -o jsonpath='{.status.addresses[?(@.type=="InternalIP")].address}'); port=18081
     receiver_owned origin; control=(docker exec "$cluster-origin" /probe); httpbin=()
-    ;;
-  mesh-external)
-    receiver_owned origin; receiver_owned quic
-    ip=$(jq -r .origin "$state_dir/egress.json"); port=9000
-    [[ "$protocol" != dns-tcp ]] || port=53
-    receiver_ns='' receiver_pod='' receiver_container=''
-    control=(docker exec "$cluster-quic" /probe)
-    if [[ "$phase" == capture ]]; then source_pod=$(epod "$source_ns" workload); fi
-    ;;
-  gateway-neighbor|dns-neighbor|istiod-neighbor)
-    receiver_ns=networking-gateway; port=15443
-    if [[ "$target" == dns-neighbor ]]; then receiver_ns=kube-system; port=53; fi
-    if [[ "$target" == istiod-neighbor ]]; then receiver_ns=istio-system; port=15012; fi
-    receiver_pod=network-neighbor receiver_container=probe
-    ip=$(k -n "$receiver_ns" get pod "$receiver_pod" -o jsonpath='{.status.podIP}')
-    ;;
-  dns-endpoint|dns-wrong)
-    receiver_ns=kube-system receiver_container=coredns
-    receiver_pod=$(k -n kube-system get pods -l k8s-app=kube-dns -o json | jq -er '.items|sort_by(.metadata.name)|.[0].metadata.name')
-    ip=$(k -n "$receiver_ns" get pod "$receiver_pod" -o jsonpath='{.status.podIP}'); port=53
-    httpbin=(--query kubernetes.default.svc.cluster.local)
-    if [[ "$target" == dns-wrong ]]; then port=9153; httpbin=(--connect-only); fi
-    ;;
-  istiod-wrong)
-    receiver_ns=istio-system receiver_container=discovery
-    receiver_pod=$(epod istio-system istiod)
-    ip=$(k -n "$receiver_ns" get pod "$receiver_pod" -o jsonpath='{.status.podIP}'); port=15014
-    httpbin=(--connect-only)
-    ;;
-  gateway-endpoint|gateway-tls-endpoint)
-    source_pod=$(epod "$source_ns" workload)
-    export GATEWAY_ENDPOINT
-    GATEWAY_ENDPOINT=$(k -n networking-gateway get pod "$(epod networking-gateway gateway)" -o jsonpath='{.status.podIP}')
-    envsubst '${GATEWAY_ENDPOINT}' < "$root/test/e2e/config/gateway-endpoint.yaml" | k apply -f - >/dev/null
-    deadline=$((SECONDS+30))
-    until k -n "$source_ns" exec "$source_pod" -c istio-proxy -- pilot-agent request GET clusters | grep 'outbound|15443||gateway-endpoint.test' >/dev/null; do ((SECONDS < deadline)) || exit 1; sleep 0.2; done
-    ip=$GATEWAY_ENDPOINT port=15443
-    httpbin=(--host gateway-endpoint.test)
-    if [[ "$protocol" == https ]]; then port=15444; httpbin+=(--server-name origin.test); fi
-    receiver_owned origin; receiver_owned quic
-    receiver_ns='' receiver_pod='' receiver_container=''
-    control=(docker exec "$cluster-quic" /probe)
     ;;
   *) echo "unsupported network target: $target" >&2; exit 2;;
 esac
@@ -109,11 +63,7 @@ fi
 receiver_port=$port
 [[ "$target" != np-service ]] || receiver_port=8080
 control_address=$address; control_extra=("${httpbin[@]}")
-if [[ "$target" == gateway-endpoint || "$target" == gateway-tls-endpoint ]]; then
-  receiver_port=8080; [[ "$protocol" != https ]] || receiver_port=443
-  control_address="$(jq -r .origin "$state_dir/egress.json"):$receiver_port"
-  control_extra=(--ca /certs/ca.pem)
-fi
+if [[ "$protocol" == quic ]]; then control_extra+=(--ca /certs/ca.pem); fi
 capture_pids=() capture_roles=()
 finish_capture() {
   local i role
@@ -128,13 +78,20 @@ finish_capture() {
   done
   capture_pids=()
 }
-felix_pid='' policy_added=false temporary_pod=''
+felix_pid='' policy_added=false runtime_pid=''
+runtime_resume() {
+  if [[ -n "$runtime_pid" ]]; then
+    docker exec "$cluster-control-plane" kill -CONT "$runtime_pid" || return 1
+    docker exec "$cluster-control-plane" ps -o stat= -p "$runtime_pid" | awk '$1 !~ /^T/ {ok=1} END {exit !ok}' || return 1
+    runtime_pid=''
+  fi
+}
 cleanup_network() {
   local rc=$?
   finish_capture || rc=1
   felix_resume || rc=1
   if [[ "$policy_added" == true ]]; then k -n networking-np delete networkpolicy case-allow --ignore-not-found >/dev/null || rc=1; fi
-  if [[ -n "$temporary_pod" ]]; then k -n networking-egress delete pod "$temporary_pod" --ignore-not-found --wait=true --timeout=60s >/dev/null || rc=1; fi
+  runtime_resume || rc=1
   if [[ "$rc" == 0 && -f "$state_dir/fault-active" && $(cat "$state_dir/fault-active") == "$test_id" ]]; then rm -f "$state_dir/fault-active"; fi
   exit "$rc"
 }
@@ -145,18 +102,22 @@ snapshot_rules() {
   docker exec "$cluster-control-plane" iptables-save -c -t filter | awk -v chain="cali-fw-$interface" '$2=="-A" && $3==chain {print}'
 }
 case "$phase" in
-  proxy-uid|exclusion)
-    temporary_pod="bypass-$test_id"
+  runtime-stopped|runtime-restarted)
+    [[ "$source_ns" == networking-enrollment && "$source_pod" == trusted ]] || exit 2
     printf '%s\n' "$test_id" > "$state_dir/fault-active"
-    k -n networking-egress get deployment workload -o json | jq --arg name "$temporary_pod" --arg phase "$phase" '{apiVersion:"v1",kind:"Pod",metadata:(.spec.template.metadata+{name:$name,namespace:"networking-egress"}),spec:.spec.template.spec} | .metadata.labels.app=$name | if $phase=="proxy-uid" then (.spec.containers[]|select(.name=="probe")|.securityContext.runAsUser)=1337 else .metadata.annotations["traffic.sidecar.istio.io/excludeOutboundPorts"]="9000" end' | k create -f - >/dev/null
-    k -n networking-egress wait pod "$temporary_pod" --for=condition=Ready --timeout=120s >/dev/null
-    source_pod=$temporary_pod
-    source_ip=$(k -n "$source_ns" get pod "$source_pod" -o jsonpath='{.status.podIP}')
-    interface=$(endpoint_interface "$source_ns" "$source_pod")
-    pid=$(sandbox_pid "$source_ns" "$source_pod")
-    docker exec "$cluster-control-plane" nsenter -t "$pid" -n iptables-save -t nat | rg_istio > "$artifacts/exclusion-rules.txt"
-    if [[ "$phase" == proxy-uid ]]; then grep -E -- '--uid-owner 1337 .* -j RETURN|--uid-owner 1337 -j RETURN' "$artifacts/exclusion-rules.txt" >/dev/null
-    else grep -E -- '--dport 9000 .* -j RETURN|--dport 9000 -j RETURN' "$artifacts/exclusion-rules.txt" >/dev/null; fi
+    original=$(k -n "$source_ns" get pod "$source_pod" -o json)
+    cid=$(jq -er '.status.initContainerStatuses[]|select(.name=="runtime")|.containerID|sub("^containerd://";"")' <<< "$original")
+    runtime_pid=$(docker exec "$cluster-control-plane" crictl inspect "$cid" | jq -er --arg uid "$(jq -r .metadata.uid <<< "$original")" '. | select(.status.labels["io.kubernetes.pod.uid"]==$uid and .status.metadata.name=="runtime")|.info.pid|select(.>0)')
+    if [[ "$phase" == runtime-stopped ]]; then
+      docker exec "$cluster-control-plane" kill -STOP "$runtime_pid"
+      docker exec "$cluster-control-plane" ps -o pid=,stat= -p "$runtime_pid" | awk '$2 ~ /^T/ {ok=1;print} END {exit !ok}' > "$artifacts/runtime-stopped.txt"
+    else
+      docker exec "$cluster-control-plane" kill -TERM "$runtime_pid"
+      runtime_pid=''
+      deadline=$((SECONDS+60))
+      until k -n "$source_ns" get pod "$source_pod" -o json | jq -e --arg cid "containerd://$cid" '[.status.initContainerStatuses[]|select(.name=="runtime")]|length==1 and .[0].containerID!=$cid and .[0].restartCount>0 and .[0].state.running!=null' >/dev/null; do ((SECONDS<deadline)) || exit 1; sleep 0.2; done
+      k -n "$source_ns" get pod "$source_pod" -o json | jq '.status.initContainerStatuses[]|select(.name=="runtime")' > "$artifacts/runtime-restarted.json"
+    fi
     ;;
   felix-stopped) felix_pause;;
   felix-recovery) felix_pause; felix_resume;;
@@ -192,7 +153,7 @@ done
 snapshot_rules > "$artifacts/rules-before.txt"
 k -n "$source_ns" exec "$source_pod" -c probe -- /probe request --protocol "$protocol" --target "$address" --id "$test_id" --timeout 2s "${httpbin[@]}" > "$artifacts/probe.jsonl"
 snapshot_rules > "$artifacts/rules-after.txt"
-transport=tcp; [[ "$protocol" != udp && "$protocol" != dns-udp ]] || transport=udp
+transport=tcp; [[ "$protocol" != udp && "$protocol" != dns-udp && "$protocol" != quic ]] || transport=udp
 docker exec "$cluster-control-plane" conntrack -L -p "$transport" --orig-src "$source_ip" --orig-dst "$ip" > "$artifacts/conntrack.txt" 2> "$artifacts/conntrack-status.txt" || true
 receiver_ip=$ip
 if [[ -n "$receiver_ns" ]]; then receiver_ip=$(k -n "$receiver_ns" get pod "$receiver_pod" -o jsonpath='{.status.podIP}'); fi
@@ -200,21 +161,16 @@ jq -n --arg source "$source_ip" --arg original "$address" --arg endpoint "$recei
 if [[ "$phase" == felix-stopped ]]; then felix_paused > "$artifacts/felix-during.txt"; fi
 "${control[@]}" request --protocol "$protocol" --target "$control_address" --id "$test_id-control-after" --timeout 2s "${control_extra[@]}" > "$artifacts/control-after.jsonl"
 finish_capture
-if [[ "$phase" != healthy && "$phase" != capture ]]; then felix_resume; np_recovery; fi
+if [[ "$phase" == runtime-stopped ]]; then
+  docker exec "$cluster-control-plane" ps -o pid=,stat= -p "$runtime_pid" | awk '$2 ~ /^T/ {ok=1;print} END {exit !ok}' > "$artifacts/runtime-during.txt"
+fi
+if [[ "$phase" != healthy ]]; then runtime_resume; felix_resume; np_recovery; fi
 if [[ -z "$receiver_ns" ]]; then
   after=$(receiver_snapshot origin)
   docker logs --since "$started" "$cluster-origin" > "$artifacts/receiver.log" 2>&1
 else
   after=$(pod_snapshot "$receiver_ns" "$receiver_pod")
   k -n "$receiver_ns" logs "$receiver_pod" -c "$receiver_container" --since-time "$started" > "$artifacts/receiver.log"
-fi
-if [[ "$phase" == capture ]]; then
-  k -n "$source_ns" exec "$source_pod" -c istio-proxy -- pilot-agent request GET 'listeners?format=json' > "$artifacts/capture-listeners.json"
-fi
-if [[ "$source_ns" == networking-egress && "$source_pod" != "$(epod networking-egress plain)" ]]; then
-  jq -n --arg started "$started" --arg pod "$source_pod" --arg gateway "$(epod networking-gateway gateway)" '{started:$started,pod:$pod,gateway:$gateway}' > "$artifacts/network-log-context.json"
-  k -n "$source_ns" logs "$source_pod" -c istio-proxy --since-time "$started" > "$artifacts/workload.log"
-  k -n networking-gateway logs "$(epod networking-gateway gateway)" -c istio-proxy --since-time "$started" > "$artifacts/gateway.log"
 fi
 jq -n --arg id "$test_id" --arg source "$source_ip" --arg interface "$interface" --rawfile before "$artifacts/rules-before.txt" --rawfile after "$artifacts/rules-after.txt" '{id:$id,source_ip:$source,interface:$interface,before:$before,after:$after}' > "$artifacts/enforcement.json"
 jq -n --arg id "$test_id" --arg protocol "$protocol" --arg target "$target" --arg phase "$phase" --arg source "$source_ip" --arg before "$before" --arg after "$after" --arg address "$address" '{id:$id,protocol:$protocol,target:$target,phase:$phase,source_ip:$source,receiver_before:$before,receiver_after:$after,address:$address,restored:true,fault_verified:true}' > "$artifacts/network.json"

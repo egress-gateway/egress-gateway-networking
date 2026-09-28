@@ -65,6 +65,20 @@ func run(ctx context.Context, args []string) error {
 		return errors.New("serve|request|idle|pki required")
 	}
 	f := flag.NewFlagSet(args[0], flag.ContinueOnError)
+
+	if args[0] == "prepare" {
+		if err := os.Chown("/private", 2000, 2000); err != nil {
+			return err
+		}
+		return os.Chmod("/private", 0700)
+	}
+	if args[0] == "private-idle" {
+		if err := os.WriteFile("/private/ready", []byte("ready"), 0600); err != nil {
+			return err
+		}
+		<-ctx.Done()
+		return nil
+	}
 	if args[0] == "privileges" {
 		return privileges(f, args[1:])
 	}

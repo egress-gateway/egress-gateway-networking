@@ -30,14 +30,6 @@ type TCPDestination struct {
 	Ports []int32 `json:"ports"`
 }
 
-// Istiod describes one resolved control service; its port and TLS verification
-// requirements are fixed. IP is supplied by the trusted installation consumer.
-type Istiod struct {
-	IPv4     string `json:"ipv4"`
-	Hostname string `json:"hostname"`
-	Peer     Peer   `json:"peer"`
-}
-
 // Network can be expanded before a Pod exists. Binding is allocated and protected
 // by the caller; using the same binding deliberately selects the same allowance.
 type Network struct {
@@ -45,7 +37,6 @@ type Network struct {
 	Binding   string           `json:"binding"`
 	Forward   []TCPDestination `json:"forward,omitempty"`
 	DNS       []Peer           `json:"dns,omitempty"`
-	Control   *Istiod          `json:"control,omitempty"`
 }
 
 type Policy struct {
@@ -98,17 +89,6 @@ func ExpandPolicy(n Network) (*Policy, error) {
 	for i, d := range n.DNS {
 		if err := add(d, []int32{53}, []core.Protocol{core.ProtocolTCP, core.ProtocolUDP}); err != nil {
 			return nil, fmt.Errorf("network.dns[%d]: %w", i, err)
-		}
-	}
-	if n.Control != nil {
-		if err := validIPv4(n.Control.IPv4); err != nil {
-			return nil, fmt.Errorf("network.control.ipv4: %w", err)
-		}
-		if len(validation.IsDNS1123Subdomain(n.Control.Hostname)) != 0 || n.Control.Hostname == "" {
-			return nil, fmt.Errorf("network.control.hostname: DNS hostname required")
-		}
-		if err := add(n.Control.Peer, []int32{15012}, []core.Protocol{core.ProtocolTCP}); err != nil {
-			return nil, fmt.Errorf("network.control.peer: %w", err)
 		}
 	}
 	return p, nil

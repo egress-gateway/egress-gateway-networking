@@ -13,15 +13,19 @@ Feature: Independent network bindings preserve each Pod's whitelist
       | E1-02 | Binding A cannot use B's allowance  | enrollment-a-other | deny     |
       | E1-03 | Binding B reaches its own endpoint  | enrollment-b-own   | allow    |
       | E1-04 | Binding B cannot use A's allowance  | enrollment-b-other | deny     |
+      | E1-05 | Trusted components retain allowance | enrollment-trusted-own   | allow |
+      | E1-06 | Trusted components retain isolation | enrollment-trusted-other | deny  |
 
-  Scenario: E1-05 Original enabled labels prevent duplicate injection
-    Then the enrollment operation "injection" preserves the startup contract
+  Scenario Outline: <id> Trusted component lifecycle preserves isolation
+    Given the independent enrollment bindings are ready
+    When the network probe "http" targets "enrollment-trusted-other" during "<phase>"
+    Then the network contract "deny" has attributable packet and enforcement evidence
 
-  Scenario: E1-06 Proxy startup failure blocks business initialization
-    Then the enrollment operation "startup" preserves the startup contract
+    Examples:
+      | id    | phase             |
+      | E2-01 | runtime-stopped   |
+      | E2-02 | runtime-restarted |
 
-  Scenario: E1-07 Applications cannot adopt proxy identity or change capture privileges
-    Then the enrollment operation "privileges" preserves the startup contract
-
-  Scenario: E3-01 Missing redirect listeners fail compatibility acceptance
-    Then a missing redirect listener fails the normal capture verdict and recovers
+  Scenario: E3-01 Business and resident containers cannot change identity or network marks
+    Given the independent enrollment bindings are ready
+    Then restricted components cannot acquire identity or network privileges

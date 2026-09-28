@@ -8,16 +8,14 @@ import (
 	"github.com/egress-gateway/egress-gateway-networking/enrollment"
 	core "k8s.io/api/core/v1"
 	meta "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/intstr"
 )
 
+func security(uid int64) *core.SecurityContext {
+	return &core.SecurityContext{RunAsUser: new(uid), RunAsGroup: new(uid), AllowPrivilegeEscalation: new(false), Capabilities: &core.Capabilities{Drop: []core.Capability{"ALL"}}}
+}
 func example() (*core.Pod, enrollment.Options) {
-	sc := func(uid int64) *core.SecurityContext {
-		return &core.SecurityContext{RunAsUser: new(uid), RunAsGroup: new(uid), AllowPrivilegeEscalation: new(false), Capabilities: &core.Capabilities{Drop: []core.Capability{"ALL"}}}
-	}
-	probe := &core.Probe{ProbeHandler: core.ProbeHandler{HTTPGet: &core.HTTPGetAction{Path: "/healthz/ready", Port: intstr.FromInt32(15021)}}}
-	p := &core.Pod{ObjectMeta: meta.ObjectMeta{Namespace: "tenant", GenerateName: "workload-", Labels: map[string]string{"example.test/enabled": "true", "business": "kept"}}, Spec: core.PodSpec{ServiceAccountName: "worker", Containers: []core.Container{{Name: "app", Image: "app:test", SecurityContext: sc(10000)}}, InitContainers: []core.Container{{Name: enrollment.ProxyName, Image: "istio/proxyv2:1.31.0", RestartPolicy: new(core.ContainerRestartPolicyAlways), SecurityContext: sc(1337), StartupProbe: probe.DeepCopy(), ReadinessProbe: probe.DeepCopy()}, {Name: "business-init", Image: "init:test", SecurityContext: sc(10000)}}}}
-	o := enrollment.Options{EnabledLabel: "example.test/enabled", Network: enrollment.Network{Namespace: "tenant", Binding: "binding-a", Control: &enrollment.Istiod{IPv4: "10.96.0.12", Hostname: "istiod.istio-system.svc", Peer: enrollment.Peer{Namespace: "istio-system", PodLabels: map[string]string{"app": "istiod"}}}}}
+	p := &core.Pod{ObjectMeta: meta.ObjectMeta{Namespace: "tenant", GenerateName: "workload-", Labels: map[string]string{"business": "kept"}}, Spec: core.PodSpec{ServiceAccountName: "worker", Containers: []core.Container{{Name: "app", Image: "app:test", SecurityContext: security(10000)}}, InitContainers: []core.Container{{Name: "runtime", Image: "runtime:test", RestartPolicy: new(core.ContainerRestartPolicyAlways), SecurityContext: security(2000)}, {Name: "business-init", Image: "init:test", SecurityContext: security(10000)}}}}
+	o := enrollment.Options{Network: enrollment.Network{Namespace: "tenant", Binding: "binding-a"}, Trusted: enrollment.TrustedSpec{InitContainers: []core.Container{*p.Spec.InitContainers[0].DeepCopy()}}}
 	return p, o
 }
 
@@ -41,100 +39,42 @@ func TestAdmissionExpansionIsPureIdempotentAndPreservesBusiness(t *testing.T) {
 	if a.UID != "" || a.Name != "" || a.GenerateName != p.GenerateName || a.Labels["business"] != "kept" || !reflect.DeepEqual(a.Spec.Containers, p.Spec.Containers) {
 		t.Fatal("lost admission/business fields")
 	}
-	if a.Spec.InitContainers[0].Name != "istio-validation" || a.Spec.InitContainers[1].Name != enrollment.ProxyName || a.Spec.InitContainers[2].Name != "business-init" {
-		t.Fatal("startup order changed")
+	if !reflect.DeepEqual(a.Spec, p.Spec) || !reflect.DeepEqual(a.Annotations, p.Annotations) {
+		t.Fatal("platform helper changed component execution")
 	}
-	if a.Annotations["sidecar.istio.io/inject"] != "" {
-		t.Fatal("CNI disabled")
-	}
+
 }
 
 func TestPublicInputsCannotOverrideContract(t *testing.T) {
 	tests := map[string]func(*core.Pod, *enrollment.Options){
-		"missing proxy": func(p *core.Pod, _ *enrollment.Options) { p.Spec.InitContainers = nil },
-		"ordinary sidecar": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.Containers = append(p.Spec.Containers, p.Spec.InitContainers[0])
-			p.Spec.InitContainers = nil
-		},
-		"wrong proxy uid": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.InitContainers[0].SecurityContext.RunAsUser = new(int64(1001))
-		},
-		"app proxy uid": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.Containers[0].SecurityContext.RunAsUser = new(int64(1337))
-		},
-		"app proxy gid": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.Containers[0].SecurityContext.RunAsGroup = new(int64(1337))
-		},
-		"missing app gid":  func(p *core.Pod, _ *enrollment.Options) { p.Spec.Containers[0].SecurityContext.RunAsGroup = nil },
-		"missing init gid": func(p *core.Pod, _ *enrollment.Options) { p.Spec.InitContainers[1].SecurityContext.RunAsGroup = nil },
-		"dns listener override": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.InitContainers[0].Env = []core.EnvVar{{Name: "DNS_PROXY_ADDR", Value: "127.0.0.1:16053"}}
-		},
-		"tls name override": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.InitContainers[0].Env = []core.EnvVar{{Name: "ISTIOD_SAN", Value: "wrong.test"}}
-		},
-		"dns listener valueFrom": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.InitContainers[0].Env = []core.EnvVar{{Name: "DNS_PROXY_ADDR", ValueFrom: &core.EnvVarSource{FieldRef: &core.ObjectFieldSelector{FieldPath: "metadata.name"}}}}
-		},
 		"root app": func(p *core.Pod, _ *enrollment.Options) {
 			p.Spec.Containers[0].SecurityContext.RunAsUser = new(int64(0))
 		},
+		"missing group": func(p *core.Pod, _ *enrollment.Options) { p.Spec.Containers[0].SecurityContext.RunAsGroup = nil },
 		"net admin": func(p *core.Pod, _ *enrollment.Options) {
 			p.Spec.Containers[0].SecurityContext.Capabilities.Add = []core.Capability{"NET_ADMIN"}
 		},
-		"privileged": func(p *core.Pod, _ *enrollment.Options) { p.Spec.Containers[0].SecurityContext.Privileged = new(true) },
-		"escalation": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.Containers[0].SecurityContext.AllowPrivilegeEscalation = new(true)
-		},
 		"host network": func(p *core.Pod, _ *enrollment.Options) { p.Spec.HostNetwork = true },
 		"host pid":     func(p *core.Pod, _ *enrollment.Options) { p.Spec.HostPID = true },
+		"host ipc":     func(p *core.Pod, _ *enrollment.Options) { p.Spec.HostIPC = true },
 		"shared pid":   func(p *core.Pod, _ *enrollment.Options) { p.Spec.ShareProcessNamespace = new(true) },
-		"supplemental group": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.SecurityContext = &core.PodSecurityContext{SupplementalGroups: []int64{1337}}
+		"root group": func(p *core.Pod, _ *enrollment.Options) {
+			p.Spec.SecurityContext = &core.PodSecurityContext{SupplementalGroups: []int64{0}}
 		},
 		"host mount": func(p *core.Pod, _ *enrollment.Options) {
 			p.Spec.Volumes = []core.Volume{{Name: "host", VolumeSource: core.VolumeSource{HostPath: &core.HostPathVolumeSource{Path: "/"}}}}
 		},
-		"business init before proxy": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.InitContainers[0], p.Spec.InitContainers[1] = p.Spec.InitContainers[1], p.Spec.InitContainers[0]
+		"binding":         func(p *core.Pod, _ *enrollment.Options) { p.Labels[enrollment.BindingLabel] = "other" },
+		"namespace":       func(_ *core.Pod, o *enrollment.Options) { o.Network.Namespace = "other" },
+		"missing trusted": func(p *core.Pod, _ *enrollment.Options) { p.Spec.InitContainers = p.Spec.InitContainers[1:] },
+		"privileged":      func(p *core.Pod, _ *enrollment.Options) { p.Spec.Containers[0].SecurityContext.Privileged = new(true) },
+		"escalation": func(p *core.Pod, _ *enrollment.Options) {
+			p.Spec.Containers[0].SecurityContext.AllowPrivilegeEscalation = new(true)
 		},
-		"trusted init not unrestricted": func(p *core.Pod, o *enrollment.Options) {
-			p.Spec.InitContainers[0], p.Spec.InitContainers[1] = p.Spec.InitContainers[1], p.Spec.InitContainers[0]
-			o.TrustedInit = []string{"business-init"}
-			p.Spec.InitContainers[0].SecurityContext.Capabilities.Add = []core.Capability{"NET_ADMIN"}
+		"sysctl": func(p *core.Pod, _ *enrollment.Options) {
+			p.Spec.SecurityContext = &core.PodSecurityContext{Sysctls: []core.Sysctl{{Name: "net.ipv4.ip_forward", Value: "1"}}}
 		},
-		"startup gate missing": func(p *core.Pod, _ *enrollment.Options) { p.Spec.InitContainers[0].StartupProbe = nil },
-		"dns env disabled": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.InitContainers[0].Env = []core.EnvVar{{Name: "ISTIO_META_DNS_CAPTURE", Value: "false"}}
-		},
-		"config disables dns": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.InitContainers[0].Env = []core.EnvVar{{Name: "PROXY_CONFIG", Value: `{"proxyMetadata":{"ISTIO_META_DNS_CAPTURE":"false"}}`}}
-		},
-		"tls bootstrap changed": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.InitContainers[0].Env = []core.EnvVar{{Name: "PROXY_CONFIG", Value: `{"controlPlaneAuthPolicy":"NONE"}`}}
-		},
-		"envFrom": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.InitContainers[0].EnvFrom = []core.EnvFromSource{{Prefix: "HIDDEN"}}
-		},
-		"inject false": func(p *core.Pod, _ *enrollment.Options) {
-			p.Annotations = map[string]string{"sidecar.istio.io/inject": "false"}
-		},
-		"inject true label": func(p *core.Pod, _ *enrollment.Options) { p.Labels["sidecar.istio.io/inject"] = "true" },
-		"exclusion annotation": func(p *core.Pod, _ *enrollment.Options) {
-			p.Annotations = map[string]string{"traffic.sidecar.istio.io/excludeOutboundPorts": "443"}
-		},
-		"reroute annotation": func(p *core.Pod, _ *enrollment.Options) {
-			p.Annotations = map[string]string{"istio.io/reroute-virtual-interfaces": "eth0"}
-		},
-		"second config channel": func(p *core.Pod, _ *enrollment.Options) {
-			p.Annotations = map[string]string{"proxy.istio.io/config": "{}"}
-		},
-		"wrong binding": func(p *core.Pod, _ *enrollment.Options) { p.Labels[enrollment.BindingLabel] = "other" },
-		"address conflict": func(p *core.Pod, _ *enrollment.Options) {
-			p.Spec.HostAliases = []core.HostAlias{{IP: "10.96.0.13", Hostnames: []string{"istiod.istio-system.svc"}}}
-		},
-		"namespace mismatch": func(_ *core.Pod, o *enrollment.Options) { o.Network.Namespace = "other" },
-		"control missing":    func(_ *core.Pod, o *enrollment.Options) { o.Network.Control = nil },
+		"ephemeral": func(p *core.Pod, _ *enrollment.Options) { p.Spec.EphemeralContainers = []core.EphemeralContainer{{}} },
 	}
 	for name, change := range tests {
 		t.Run(name, func(t *testing.T) {
@@ -142,7 +82,7 @@ func TestPublicInputsCannotOverrideContract(t *testing.T) {
 			change(p, &o)
 			result, err := enrollment.ExpandPod(p, o)
 			if err == nil || result != nil {
-				t.Fatal("invalid input accepted or partial result returned")
+				t.Fatal("invalid input accepted")
 			}
 		})
 	}
@@ -150,7 +90,6 @@ func TestPublicInputsCannotOverrideContract(t *testing.T) {
 
 func TestPolicyLimitsAndBinding(t *testing.T) {
 	_, o := example()
-	o.Network.Control = nil
 	p, err := enrollment.ExpandPolicy(o.Network)
 	if err != nil {
 		t.Fatal(err)

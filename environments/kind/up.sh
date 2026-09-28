@@ -4,8 +4,7 @@ source "$(dirname "$0")/common.sh"
 docker info >/dev/null
 if docker inspect "$node" >/dev/null 2>&1; then echo 'cluster already exists; refusing takeover' >&2; exit 2; fi
 [[ ! -e "$kubeconfig" && ! -e "$state_dir/node-id" ]] || { echo 'existing receipt; refusing takeover' >&2; exit 2; }
-export DEFAULT_CNI_DISABLED=false
-if [[ $(jq -r '.profile // "istio-only"' "$state_dir/environment.json") == calico-istio ]]; then DEFAULT_CNI_DISABLED=true; fi
+export DEFAULT_CNI_DISABLED=true
 export OWNER_FILE="$state_dir/owner"
 envsubst '${OWNER_FILE} ${DEFAULT_CNI_DISABLED}' < "$root/environments/kind/cluster.yaml" > "$state_dir/cluster.yaml"
 receipt() {

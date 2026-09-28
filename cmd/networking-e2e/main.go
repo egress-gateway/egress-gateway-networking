@@ -47,20 +47,18 @@ func run() (result error) {
 	if os.Args[1] == "render-fixture" {
 		f := flag.NewFlagSet("render-fixture", flag.ContinueOnError)
 		ns := f.String("namespace", "", "policy namespace")
-		ip := f.String("istiod-ip", "", "caller-resolved control address")
 		resolver := f.String("resolver", "", "private controlled resolver fixture")
 		policy := f.Bool("policy", false, "render policy before workload creation")
-		only := f.Bool("policy-only", false, "unmeshed isolation fixture")
 		if err := f.Parse(os.Args[2:]); err != nil {
 			return err
 		}
 		if *policy {
 			if *resolver != "" {
-				return consumer.RenderResolverPolicy(os.Stdout, *ns, *ip, *resolver)
+				return consumer.RenderResolverPolicy(os.Stdout, *ns, *resolver)
 			}
-			return consumer.RenderPolicy(os.Stdout, *ns, *ip)
+			return consumer.RenderPolicy(os.Stdout, *ns)
 		}
-		return consumer.RenderPod(os.Stdin, os.Stdout, *ip, os.Getenv("NETWORKING_PROXY_SPEC"), *only)
+		return consumer.RenderPod(os.Stdin, os.Stdout)
 	}
 	flags := flag.NewFlagSet(os.Args[1], flag.ContinueOnError)
 	root := flags.String("root", ".", "repository root")
@@ -69,10 +67,9 @@ func run() (result error) {
 	cluster := flags.String("cluster", "", "new cluster name (networking-e2e- prefix)")
 	keep := flags.Bool("keep", false, "retain the environment after e2e, including failures")
 	ciOutcomes := flags.String("ci-outcomes", "", "CI setup and network step outcomes for report finalization")
-	profile := flags.String("profile", "istio-only", "istio-only or calico-istio")
+	profile := flags.String("profile", "calico", "supported foundation: calico")
 	tags := flags.String("tags", "", "development Godog tag subset; unexecuted cases keep full acceptance red")
-	acceptance := flags.String("acceptance", "baseline", "baseline or enforce acceptance")
-	proxySpec := flags.String("proxy-spec", "", "caller native-sidecar JSON fragment for Calico enrollment acceptance")
+	acceptance := flags.String("acceptance", "enforce", "required acceptance: enforce")
 	expectedRevision := flags.String("expected-revision", "", "consumer networking commit; must equal installation checkout HEAD")
 	if err := flags.Parse(os.Args[2:]); err != nil {
 		return err
@@ -99,7 +96,10 @@ func run() (result error) {
 	if os.Args[1] == "summary" {
 		return printSummary(*artifacts, *ciOutcomes)
 	}
-	if *acceptance != "baseline" && *acceptance != "enforce" {
+	if *profile != "calico" {
+		return fmt.Errorf("unsupported profile %q; use calico", *profile)
+	}
+	if *acceptance != "enforce" {
 		return fmt.Errorf("unknown acceptance mode %q", *acceptance)
 	}
 	runDir, err := os.MkdirTemp(*artifacts, "run-")
@@ -136,15 +136,6 @@ func run() (result error) {
 	sha, dirty := git("rev-parse", "HEAD"), git("status", "--porcelain", "--untracked-files=normal")
 	if *expectedRevision != "" && *expectedRevision != sha {
 		return fmt.Errorf("networking asset revision mismatch: expected %s, checkout %s", *expectedRevision, sha)
-	}
-	if *proxySpec != "" {
-		if *profile != "calico-istio" {
-			return errors.New("proxy-spec requires calico-istio")
-		}
-		*proxySpec, err = filepath.Abs(*proxySpec)
-		if err != nil {
-			return err
-		}
 	}
 	self, err := os.Executable()
 	if err != nil {
@@ -217,7 +208,7 @@ func run() (result error) {
 		defer log.Close()
 		cmd := exec.CommandContext(ctx, bash, append([]string{filepath.Join(*root, script)}, args...)...)
 		cmd.Dir = *root
-		cmd.Env = append(os.Environ(), "NETWORKING_E2E_BIN="+self, "NETWORKING_PROXY_SPEC="+*proxySpec)
+		cmd.Env = append(os.Environ(), "NETWORKING_E2E_BIN="+self)
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		cmd.Cancel = func() error { return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM) }
 		cmd.WaitDelay = 5 * time.Second
@@ -229,7 +220,7 @@ func run() (result error) {
 		return nil
 	}
 	s := suite.Suite{Root: *root, State: *state, Artifacts: runDir, Execute: execute, Report: report, Tags: *tags}
-	e := environment.Environment{Root: *root, State: *state, Artifacts: runDir, Cluster: *cluster, Keep: *keep, Profile: *profile, ProxySpec: *proxySpec, Execute: execute, Test: s.Run, PolicyTest: s.RunPolicy}
+	e := environment.Environment{Root: *root, State: *state, Artifacts: runDir, Cluster: *cluster, Keep: *keep, Profile: *profile, Execute: execute, Test: s.Run}
 	if os.Args[1] == "negative" {
 		e.Test = s.RunNegative
 	}

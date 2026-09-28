@@ -1,154 +1,98 @@
-# Pod enrollment contract
+# Integration contract
 
-The controller resolves the original enabled label and ServiceAccount through its
-own Profile/binding model. Business workloads do not supply networking values.
-The public `enrollment` package takes trusted, resolved values and returns copies;
-it performs no Kubernetes, filesystem or network calls.
+## Ownership and call order
 
-1. Call `ExpandPolicy(Network)` before creating the workload. The result contains
-   a Pod binding label and a Kubernetes NetworkPolicy spec. The controller owns
-   resource names, policy application, reconciliation and binding-token uniqueness.
-2. Compose the runtime Pod, including an `istio-proxy` native sidecar in
-   `initContainers` with `restartPolicy: Always`. Call `ExpandPod(Pod, Options)`
-   with the identical Network. The returned copy is the final network expansion.
-3. Return that Pod's admission patch only after policy resources are preprovisioned.
-   Neither API creation nor readiness is proof that endpoint policy is programmed;
-   the CNI first-packet gates and network acceptance remain required.
+1. A trusted caller chooses a unique namespace/binding and composes the final Pod:
+   business/init containers, trusted terminating preparation, resident components,
+   volumes and startup conditions. Networking does not select a proxy or change order.
+2. `ExpandPolicy(Network)` returns a `Policy` containing NetworkPolicy spec and
+   binding labels. The caller assigns the resource name and preinstalls this policy.
+3. `ExpandPod(finalPod, Options{Network, Trusted})` validates the complete composition
+   and returns an independent Pod copy with the binding labels.
+4. The platform performs final admission and creates the workload. Kubernetes/CNI
+   must enforce the preinstalled policy before any init or business packet.
 
-A binding can be shared intentionally by Pods with identical allowances. Different
-bindings must use different tokens within a namespace. No Pod UID, IP or fixed
-name is needed, so admission with `generateName` works. Kubernetes NetworkPolicies
-are additive: the caller must prevent untrusted policy writes and governance-label
-changes; this library cannot subtract an independently installed allow policy.
+Both expansion functions are pure. Inputs remain unchanged; repeated calls,
+including supported API-defaulted objects, are stable. Failure returns an error
+identifying the field and no result. Resource naming, allocation, API writes,
+reconciliation and synchronization with admission belong to the caller.
 
-## Variable values and fixed fields
+## Network permissions
 
-`Network` permits namespace, binding token, TCP forwarding destinations, Istiod
-bootstrap information and optional resolvers. A peer is either an exact IPv4
-address or the intersection of an exact namespace and nonempty Pod labels. There
-is no unrestricted peer, CIDR range, protocol or wildcard-port input. DNS entries
-permit TCP/UDP 53 explicitly; the default list is empty. Exceptions are Pod-wide,
-including applications that bypass capture. Consumers own recursion, query policy
-and tunnel prevention.
+`Peer` is either one exact IPv4 address or one namespace plus nonempty exact Pod
+labels. `TCPDestination` adds explicit numeric ports. `Forward` describes normal
+TCP peers, including control services. `DNS` separately allows TCP and UDP 53 to
+its explicit peers. DNS is denied when omitted. No CIDR input, selector expressions,
+unrestricted UDP, implicit control plane or default DNS allowance exists.
 
-The module fixes the binding label key, default-deny egress shape, CNI capture
-annotations, native proxy UID/GID 1337, DNS capture, Istiod TLS name, and the
-official validation image/arguments. It rejects conflicting annotations, Env,
-proxy configuration and privileges rather than silently correcting them. Missing
-fixed settings are filled. Repeat expansion is idempotent and does not mutate
-input. Failure returns no applicable partial output.
+NetworkPolicy is additive and applies to the entire Pod. Other matching policies
+can widen access; the platform must protect policy writes and binding/namespace/
+endpoint labels. Services are not identities independent of their selected endpoints.
+Traffic to an allowed tuple still needs Gateway identity and authorization checks.
 
-Applications and business init containers must have a determinate non-root,
-non-proxy UID and GID, no privilege escalation, and drop all capabilities. Host
-namespaces, hostPath, host ports and network sysctl overrides are unsupported.
-Trusted preparation containers must be explicitly named and precede the proxy;
-the designation does not permit networking capabilities or unrestricted privilege.
-Validation precedes preparation; the proxy startup probe gates subsequent business
-initialization. The caller owns runtime command, image, private volumes and
-startup/readiness checks. Their implementation requires actual compatibility
-acceptance: a syntactically valid custom image is not certified by generation.
+## Trusted composition
 
-## Effective security and re-expansion
+`TrustedSpec` declares expected `InitContainers`, `Containers` and every referenced
+`Volume`. It must come from platform-controlled configuration, independently of the
+submitted workload. Do not construct it by copying an untrusted submitted Pod.
+A name or annotation never grants trust. Missing, duplicate, wrong-role or changed
+components and conflicting/replaced volume sources are rejected.
 
-The final composed Pod is checked, including applications, business initialization,
-trusted preparation, the proxy and generated validation. Container Seccomp and
-AppArmor settings take precedence over Pod settings. An effective explicit
-`Unconfined` profile is rejected. Omission retains the existing behavior: this is
-consistency hardening, **not** a guarantee that the kernel uses a restricted
-profile. The library neither inserts `RuntimeDefault` nor enables node
-`seccompDefault`. An unsafe profile inherited by generated validation is rejected,
-even if every caller-declared container overrides it safely.
+Container comparison covers the complete Kubernetes container value: image,
+command/args, environment and references, mounts, devices, security, lifecycle,
+probes and restart behavior. Only the enumerated Kubernetes 1.34 API defaults
+already covered by #11 are normalized for comparison. Volumes are compared exactly.
+Mutable ConfigMap/Secret/projected/external content is not authenticated by matching
+its reference: the platform owns its content and write permissions.
 
-Legacy `container.apparmor.security.beta.kubernetes.io/<container>` annotations
-are checked alongside the effective structured AppArmor profile. Equivalent
-`runtime/default` or `localhost/<profile>` declarations are accepted; conflicting
-declarations are rejected. Unrelated metadata is preserved.
+Unmatched regular and init containers are business containers. Business and resident
+trusted components require explicit nonzero UID/GID (or safe Pod inheritance),
+`drop: [ALL]`, no added capabilities and `allowPrivilegeEscalation: false`.
+Only a matched terminating init container may use root and add CHOWN, FOWNER and
+DAC_OVERRIDE for file preparation. Native sidecars (`restartPolicy: Always`) remain
+resident and cannot use this exception. NET_ADMIN and NET_RAW are unsupported even
+for trusted components; integration needing them requires a separately accepted
+contract extension.
 
-Any non-nil `runtimeClassName`, including an empty string, is unsupported. Presence
-of either `k8s.v1.cni.cncf.io/networks` or `v1.multus-cni.io/default-network` is
-rejected, including empty annotation values. These alternative runtime/network
-paths have not been accepted by this contract.
+Capabilities are configured on individual containers. Network operations can affect
+the Pod's shared network namespace; NetworkPolicy also covers the entire Pod.
+Root is not a Pod-wide capability grant. A preparation UID and a resident UID are
+caller choices, not reserved platform identities; UID 1337 has no special meaning.
+A typical preparation step assigns a private volume to the resident UID and sets
+0700 so that resident can write it while other UIDs cannot traverse it.
 
-Istio 1.31 CNI reads `istio-proxy.args` starting with `proxy <type>` and skips
-capture for nonempty types other than `sidecar`. Expansion rejects those types,
-including `router` and unknown values. Recognizable `pilot-agent proxy <type>`
-commands split between `command` and `args` are checked too. Leading root flags
-must use inline `--flag=value` form; ambiguous split flag/value forms are rejected. Arbitrary wrapper
-scripts and image entrypoints are not interpreted; their behavior remains the
-consumer's runtime compatibility responsibility.
+Gateway owns reserved identities, private-resource isolation, transparent capture,
+identity-provider integration and governance readiness/startup ordering. Networking
+checks platform safety; it does not infer which application code is trustworthy or
+ensure a business container never shares a Gateway identity or volume.
 
-After Kubernetes API defaulting, expansion preserves the defaulted Pod. The
-fixed validation container comparison permits only enumerated Kubernetes 1.34
-defaults: image-dependent pull policy, termination-message path/policy, and
-default fields of already-present probes/HTTP actions. API materialization of a
-legacy AppArmor annotation is equivalent only to that exact structured profile. It does not synthesize
-probes, ignore security fields, reorder arrays or discard extra configuration.
-Normalization is comparison-only and never changes emitted resources.
-Admission-added mounts (including ServiceAccount token automounts) are not field
-defaults: a validation container with such extra mounts is still rejected.
-Consumers requiring re-expansion should disable automatic token mounting and
-compose any required token volumes explicitly on the runtime containers.
+## Final object and lifecycle boundary
 
-These checks apply to the object passed to expansion. The consumer must arrange
-final admission validation and RBAC so later mutation, alternate admission paths,
-or policy/label writes cannot bypass the contract. Expansion alone is not a
-continuous runtime enforcement or webhook-ordering guarantee.
+Host network/PID/IPC, shared process namespace, hostPath, hostPort, additional network
+attachments, explicit unsupported RuntimeClass, ephemeral containers, unsafe root
+inheritance, sysctls and effective unconfined profiles are rejected. Profile omission
+does not certify that a node's runtime default is restrictive. Kubernetes API validity
+and final mutation/admission checks remain platform responsibilities.
 
-## Installation and webhook ordering
+Policy API creation is not dataplane readiness. The supported Calico CNI policy-setup
+wait and Felix enforcement must be effective when the sandbox is created, before any
+init container starts. The policy and protected labels remain in force through
+preparation, app startup, resident stop/restart, Pod termination and recovery, until
+the sandbox is destroyed. Do not remove a binding policy while a selected sandbox
+still exists. Never recycle bindings until the old workload/sandbox is gone.
 
-Install with `--enrollment-label example.org/enabled`. The installer configures
-Istio's `neverInjectSelector` for that original label's value `true`. It must
-already exist when the workload is submitted, before controller mutation. The
-controller supplies that same key in `Options.EnabledLabel`. This does not depend
-on webhook ordering or a label added by the controller. Ordinary Pods continue to
-use official injection. Do not set `sidecar.istio.io/inject=false`: the pinned CNI
-also interprets that as a reason to skip capture.
+When policy programming is unavailable, admission/CNI must keep the sandbox blocked
+or the existing dataplane must continue denying traffic; tests distinguish proven
+Calico policy refusal from unrelated Pending/image/scheduling failures. During
+recovery, allowed and denied paths must both be revalidated. Existing established
+connections may persist after policy changes; immediate revocation is not promised.
 
-The caller resolves the Istiod Service address and passes its certificate hostname
-and exact endpoint selector. Expansion maps that name to the supplied IP without
-opening DNS during bootstrap. The controller must replace affected Pod configuration
-when that bootstrap address changes. Installation checks the actual environment;
-the public Go accessor is not an environment validator.
+## Consumer example
 
-## Versions and external consumption
-
-`baseline/versions.json` is the version source for runtime components, image
-digests, downloads and test tools. `baseline.Current()` returns an independent
-copy of embedded version data. `go run ./internal/versionfiles` regenerates Shell
-and YAML projections; `make check` verifies their consistency, CI Go version and
-module Go minimum. Component upgrades require a separate validated change.
-
-External Go modules import `enrollment` and `baseline` at a pinned module revision.
-The independent-module test builds a consumer outside the repository and runs its
-generator in an empty working directory. Runtime generation never reads checkout
-assets. Installation and E2E deliberately use a checkout of the **same commit**;
-no chart/asset publishing mechanism is introduced:
-
-```sh
-/absolute/networking/bin/networking-e2e e2e \
-  --root /absolute/networking --expected-revision <full-commit-sha> \
-  --profile calico-istio --acceptance enforce
-```
-
-Run the command from the pinned checkout or build `bin/networking-e2e` there and
-invoke that binary from the consuming project with explicit `--root`. For a
-custom proxy runtime use `--proxy-spec /absolute/runtime.json`, containing `proxy`,
-optional `init`, `volumes` and `trustedInit`. This is an input to the existing
-private E2E static consumer, not a second public injector or general CLI. Its
-contents participate in the retained-environment fingerprint. Start from a clean
-owned environment when that input changes.
-
-The initially supported integration retains the official pilot-agent contract.
-The suite covers redirection, UID exclusions, DNS handling, bootstrap and startup
-failure; downstream custom-image acceptance must run it with that runtime input.
-Official-image results do not certify gateway's modified proxy. Gateway private
-mounts and management/signing API isolation remain V01-03 responsibilities.
-
-## Supported boundary
-
-Fixed versions, single-node IPv4, TCP/UDP and restricted application privileges
-remain the tested scope. Calico's existing node endpoint default Drop prerequisite
-remains explicit. Enrollment does not introduce Profile parsing, webhook handling,
-policy reconciliation, a gateway generator, MITM, OPA, FakeIP mapping or upgrades.
-Istio-only retains its historical security expectations and automatic injection;
-fixture migrations update only its verified input fingerprint.
+`examples/static` has no dependency on Gateway, Istio, controller or cluster access.
+It assembles restricted business, a root file initializer, a nonroot resident and a
+private volume; generates policy; validates/binds the Pod; emits policy before Pod;
+and demonstrates rejected initializer substitution. The platform must precreate the
+namespace/service account and install the policy before creating the workload.
+The example certifies the public contract only, not image provenance, identity
+systems, authorization or transparent proxy behavior.
