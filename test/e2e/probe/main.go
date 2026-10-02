@@ -630,7 +630,7 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 			}
 			var err error
 			if connection == nil {
-				if *connectOnly && runtime.GOOS == "linux" {
+				if *connectOnly && !*persistent && runtime.GOOS == "linux" {
 					return protocolRequest(cctx, &o)
 				}
 				if *protocol == "tls" {
