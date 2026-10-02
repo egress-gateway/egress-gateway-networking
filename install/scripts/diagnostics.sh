@@ -8,4 +8,4 @@ k get nodes -o wide > "$artifacts/nodes.txt" 2>&1 || true
 k get pods -A -o wide > "$artifacts/pods.txt" 2>&1 || true
 k get events -A --sort-by=.metadata.creationTimestamp > "$artifacts/events.txt" 2>&1 || true
 k -n calico-system logs -l k8s-app=calico-node --all-containers --prefix --tail=1000 > "$artifacts/calico-node.log" 2>&1 || true
-k get tigerastatus -o wide > "$artifacts/calico-status.txt" 2>&1 || true
+k get felixconfigurations.crd.projectcalico.org default -o json | jq '{spec:.spec}' > "$artifacts/calico-status.json" 2>&1 || true

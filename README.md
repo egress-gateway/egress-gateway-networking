@@ -24,11 +24,23 @@ are illustrative inputs, not certified Gateway implementations.
 ## Supported platform
 
 The version authority is [baseline/versions.json](baseline/versions.json):
-Kubernetes 1.34.11 on kind 0.33.0, Calico 3.32.2 / Tigera Operator 1.42.6,
-IPv4, iptables, VXLAN, BGP disabled, separately managed kube-proxy.
-`defaultEndpointToHostAction: Drop` and CNI policy setup waiting are required.
-Other runtimes, IPv6, arbitrary IP protocols and immediate established-flow
-revocation are not certified. #13 owns further protocol/first-packet work.
+Kubernetes 1.34.11 on kind 0.33.0, Calico 3.32.2 from its checksum-pinned
+upstream manifest and digest-pinned dataplane images, IPv4, iptables, VXLAN,
+BGP disabled and separately managed kube-proxy. The installer supports fresh
+clusters and repeat application of its own configuration; it rejects Operator
+installations and foreign primary networks, without adoption or migration.
+
+CNI waits for policy setup and disables IPv6 in the Pod namespace, including
+loopback, before business init or app execution. Workload-to-node traffic passes
+workload egress policy before effective `defaultEndpointToHostAction: Accept`.
+API access has no implicit exception: the trusted caller can select its exact
+existing IPv4/TCP endpoint. Network reachability grants no API authentication or RBAC.
+
+TCP/UDP remain the supported allowance protocols. SCTP, ICMP, UDP-Lite and the
+remaining IP protocol space require enforced denial or demonstrated unavailability
+under the restricted application envelope. IPv6 sockets can exist while IPv6
+communication is disabled. Other runtimes, multi-node/cloud paths and immediate
+established-flow revocation are not certified.
 
 ## Validation
 

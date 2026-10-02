@@ -37,9 +37,9 @@ finish_observers() {
   for i in "${!jobs[@]}"; do
     role=${roles[$i]}
     if [[ "$role" == receiver ]]; then
-      docker exec "$cluster-origin" /probe capture --port 9001 --stop-file "/$test_id-receiver-stop" --stop || rc=1
+      docker exec "$cluster-origin" /probe capture --port "$port" --stop-file "/$test_id-receiver-stop" --stop || rc=1
     elif [[ "$role" == sender ]]; then
-      docker exec "$cluster-control-plane" /networking-probe capture --port 9001 --stop-file "/$test_id-sender-stop" --stop || rc=1
+      docker exec "$cluster-control-plane" /networking-probe capture --port "$port" --stop-file "/$test_id-sender-stop" --stop || rc=1
     else
       docker exec "$cluster-control-plane" /networking-probe drops --target "$address" --stop-file "/$test_id-drops-stop" --stop || rc=1
     fi

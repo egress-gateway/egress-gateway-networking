@@ -4,6 +4,15 @@ source "$(dirname "$0")/common.sh"
 source "$(dirname "$0")/egress-lib.sh"
 source "$(dirname "$0")/calico-fault-lib.sh"
 need_id
+if [[ "$target" == np-ipv6 ]]; then
+  exec "$BASH" "$root/test/e2e/scripts/network-ipv6.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id" --protocol "$protocol" --target "$target" --phase "$phase"
+fi
+if [[ "$target" == api-direct || "$target" == api-service ]]; then
+  exec "$BASH" "$root/test/e2e/scripts/network-api.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id" --protocol "$protocol" --target "$target" --phase "$phase"
+fi
+if [[ "$target" == np-protocol || "$target" == np-socket-matrix ]]; then
+  exec "$BASH" "$root/test/e2e/scripts/network-protocol.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id" --protocol "$protocol" --target "$target" --phase "$phase"
+fi
 if [[ "$phase" == felix-new || "$phase" == felix-init || "$phase" == first-app || "$phase" == first-init ]]; then
   exec "$BASH" "$root/test/e2e/scripts/network-startup.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id" --protocol "$protocol" --target "$target" --phase "$phase"
 fi
@@ -14,6 +23,7 @@ fi
 case "$phase" in healthy|runtime-stopped|runtime-restarted|felix-stopped|felix-recovery|revoke) ;; *) echo "unsupported network phase: $phase" >&2; exit 2;; esac
 source_ns=networking-np source_pod=client
 receiver_ns=networking-np receiver_pod=httpbin receiver_container=httpbin
+receiver_role=origin
 port=8080 httpbin=(--httpbin)
 control=(k -n networking-np-other exec control -- /probe)
 started=$(node_stamp)
@@ -30,14 +40,26 @@ case "$target" in
   np-ip|np-wrong|np-udp) ip=$(k -n networking-np get pod httpbin -o jsonpath='{.status.podIP}');;
   np-other) receiver_pod=other; ip=$(k -n networking-np get pod other -o jsonpath='{.status.podIP}');;
   np-cross) receiver_ns=networking-np-other; ip=$(k -n "$receiver_ns" get pod httpbin -o jsonpath='{.status.podIP}');;
-  np-external|np-dns|np-quic)
+  np-protocol-receiver)
+    receiver_ns=networking-np-other receiver_pod="protocol-$protocol" receiver_container=probe
+    ip=$(k -n "$receiver_ns" get pod "$receiver_pod" -o jsonpath='{.status.podIP}')
+    case "$protocol" in sctp) port=9002;; udplite) port=9003;; icmp) port=9004;; *) exit 2;; esac
+    httpbin=()
+    ;;
+  np-external|np-dns|np-quic|np-udplite)
     receiver_owned origin; receiver_owned quic
     ip=$(jq -r .origin "$state_dir/egress.json"); port=9000
     [[ "$protocol" != udp ]] || port=9001
+    if [[ "$target" == np-udplite ]]; then
+      receiver_role=udplite; receiver_owned "$receiver_role"
+      ip=$(docker inspect "$cluster-udplite" | jq -er '.[0].NetworkSettings.Networks|values|to_entries|if length==1 then .[0].value.IPAddress else error("ambiguous receiver network") end')
+      port=9003
+    fi
     [[ "$target" != np-dns ]] || port=53
     [[ "$target" != np-quic ]] || port=8443
     receiver_ns='' receiver_pod='' receiver_container=''; httpbin=()
     control=(docker exec "$cluster-quic" /probe)
+    [[ "$protocol" != udplite ]] || control=(docker exec --user 10000:10000 "$cluster-quic" /probe)
     ;;
   np-node)
     receiver_ns=networking-np-other receiver_pod=node receiver_container=probe
@@ -53,8 +75,8 @@ interface=$(endpoint_interface "$source_ns" "$source_pod")
 [[ "$interface" =~ ^cali[a-f0-9]+$ ]] || exit 2
 sender=(docker exec "$cluster-control-plane" /networking-probe)
 if [[ -z "$receiver_ns" ]]; then
-  receiver=(docker exec "$cluster-origin" /probe)
-  before=$(receiver_snapshot origin)
+  receiver=(docker exec "$cluster-$receiver_role" /probe)
+  before=$(receiver_snapshot "$receiver_role")
 else
   receiver_pid=$(sandbox_pid "$receiver_ns" "$receiver_pod")
   receiver=(docker exec "$cluster-control-plane" nsenter -t "$receiver_pid" -n /networking-probe)
@@ -154,6 +176,7 @@ snapshot_rules > "$artifacts/rules-before.txt"
 k -n "$source_ns" exec "$source_pod" -c probe -- /probe request --protocol "$protocol" --target "$address" --id "$test_id" --timeout 2s "${httpbin[@]}" > "$artifacts/probe.jsonl"
 snapshot_rules > "$artifacts/rules-after.txt"
 transport=tcp; [[ "$protocol" != udp && "$protocol" != dns-udp && "$protocol" != quic ]] || transport=udp
+case "$protocol" in sctp|udplite|icmp) transport=$protocol;; esac
 docker exec "$cluster-control-plane" conntrack -L -p "$transport" --orig-src "$source_ip" --orig-dst "$ip" > "$artifacts/conntrack.txt" 2> "$artifacts/conntrack-status.txt" || true
 receiver_ip=$ip
 if [[ -n "$receiver_ns" ]]; then receiver_ip=$(k -n "$receiver_ns" get pod "$receiver_pod" -o jsonpath='{.status.podIP}'); fi
@@ -166,8 +189,8 @@ if [[ "$phase" == runtime-stopped ]]; then
 fi
 if [[ "$phase" != healthy ]]; then runtime_resume; felix_resume; np_recovery; fi
 if [[ -z "$receiver_ns" ]]; then
-  after=$(receiver_snapshot origin)
-  docker logs --since "$started" "$cluster-origin" > "$artifacts/receiver.log" 2>&1
+  after=$(receiver_snapshot "$receiver_role")
+  docker logs --since "$started" "$cluster-$receiver_role" > "$artifacts/receiver.log" 2>&1
 else
   after=$(pod_snapshot "$receiver_ns" "$receiver_pod")
   k -n "$receiver_ns" logs "$receiver_pod" -c "$receiver_container" --since-time "$started" > "$artifacts/receiver.log"

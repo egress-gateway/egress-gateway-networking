@@ -2,7 +2,7 @@
 source "$(dirname "$0")/common.sh"
 "$BASH" "$root/install/scripts/diagnostics.sh" --kubeconfig "$state_dir/kubeconfig" --context "kind-$cluster" --artifacts "$artifacts"
 cp "$root/install/versions.env" "$artifacts/versions.env"
-for ns in networking-np networking-np-other networking-enrollment calico-system tigera-operator; do
+for ns in networking-np networking-np-other networking-enrollment calico-system; do
   k -n "$ns" get pods -o wide > "$artifacts/$ns-pods.txt" 2>&1 || true
   k -n "$ns" get events --sort-by=.lastTimestamp > "$artifacts/$ns-events.txt" 2>&1 || true
   while IFS= read -r name; do
@@ -14,7 +14,6 @@ done
 k get nodes -o json | jq '[.items[]|{name:.metadata.name,kernel:.status.nodeInfo.kernelVersion,architecture:.status.nodeInfo.architecture}]' > "$artifacts/kernel.json" || true
 if [[ $(jq -r .profile "$state_dir/environment.json") == calico ]]; then
   cp "$root/install/calico/versions.env" "$artifacts/calico-versions.env"
-  k get tigerastatus -o wide > "$artifacts/calico-status.txt" 2>&1 || true
 fi
 if [[ -f "$state_dir/egress.json" ]]; then
   source "$(dirname "$0")/egress-lib.sh"

@@ -106,6 +106,15 @@ type networkFacts struct {
 }
 
 func evaluateNetwork(dir, id, contract string, expected egressInputs) (string, string, error) {
+	if expected.Target == "np-ipv6" {
+		return evaluateIPv6(dir, id, contract, expected)
+	}
+	if expected.Target == "api-direct" || expected.Target == "api-service" {
+		return evaluateAPI(dir, id, contract, expected)
+	}
+	if expected.Target == "np-protocol" || expected.Target == "np-socket-matrix" {
+		return evaluateProtocol(dir, id, contract, expected)
+	}
 	data, err := os.ReadFile(filepath.Join(dir, "network.json"))
 	if err != nil {
 		return "", "", err
