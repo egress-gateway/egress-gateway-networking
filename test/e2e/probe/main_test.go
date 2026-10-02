@@ -35,6 +35,51 @@ func TestRecoveryStopsOnConsecutiveSuccesses(t *testing.T) {
 	}
 }
 
+func TestConnectOnlyConnectionLifetime(t *testing.T) {
+	for _, tc := range []struct {
+		name, host string
+		persistent bool
+	}{
+		{"persistent IP", "127.0.0.1", true},
+		{"persistent hostname", "localhost", true},
+		{"new IP connections", "127.0.0.1", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			listener, err := net.Listen("tcp4", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			_, port, err := net.SplitHostPort(listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			args := []string{"--protocol", "tcp", "--target", net.JoinHostPort(tc.host, port), "--id", "connect", "--connect-only", "--duration", "1s", "--successes", "3", "--interval", "1ms"}
+			if tc.persistent {
+				args = append(args, "--persistent")
+			}
+			observations, err := captureRequest(t, args...)
+			if err != nil || len(observations) != 3 {
+				t.Fatalf("connect attempts: count=%d err=%v", len(observations), err)
+			}
+			locals := make(map[string]bool)
+			for _, o := range observations {
+				if !o.Success || !o.Connected || o.Local == "" {
+					t.Fatalf("failed connect: %+v", o)
+				}
+				locals[o.Local] = true
+			}
+			want := 3
+			if tc.persistent {
+				want = 1
+			}
+			if len(locals) != want {
+				t.Fatalf("got %d distinct connections, want %d: %+v", len(locals), want, observations)
+			}
+		})
+	}
+}
+
 func TestControlledProbeCompletion(t *testing.T) {
 	for _, tc := range []struct {
 		name, signal string

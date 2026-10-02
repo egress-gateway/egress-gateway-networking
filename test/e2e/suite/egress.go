@@ -11,6 +11,7 @@ import (
 )
 
 type probeRecord struct {
+	SocketError   int       `json:"socket_errno"`
 	UID           int       `json:"uid"`
 	Dropped       *uint32   `json:"dropped"`
 	KernelPackets *uint32   `json:"kernel_packets"`
@@ -27,6 +28,7 @@ type probeRecord struct {
 	Local         string    `json:"local"`
 	Remote        string    `json:"remote"`
 	Destination   string    `json:"destination"`
+	Target        string    `json:"target"`
 	Interface     string    `json:"interface"`
 	Reason        string    `json:"reason"`
 	Digest        string    `json:"digest"`

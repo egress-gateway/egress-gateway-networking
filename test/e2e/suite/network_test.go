@@ -61,7 +61,7 @@ func TestNetworkDenialRequiresIndependentCompleteEvidence(t *testing.T) {
 		{"fault-not-effective", ExecutionError}, {"recovery-failed", ExecutionError},
 		{"receiver-unhealthy", ExecutionError}, {"receiver-changed", ExecutionError},
 		{"capture-loss", Inconclusive}, {"no-drop", Inconclusive}, {"no-emission", Inconclusive},
-		{"unattributed", Inconclusive}, {"delivered", Violated}, {"additive-allow", Violated},
+		{"unattributed", Inconclusive}, {"syn-only", Violated}, {"additive-allow", Violated},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -118,8 +118,9 @@ func TestNetworkDenialRequiresIndependentCompleteEvidence(t *testing.T) {
 				packets[2].Dropped = new(uint32(1))
 			case "unattributed":
 				packets = append(packets, probeRecord{Event: "network-packet", Remote: "10.0.0.9:41000"})
-			case "delivered":
-				packets = append(packets, probeRecord{Event: "network-packet", Remote: "10.0.0.2:41000"})
+			case "syn-only":
+				// Packet delivery is a violation even when no handshake or payload succeeded.
+				packets = append(packets, probeRecord{Event: "network-packet", Protocol: "tcp", Remote: "10.0.0.2:41000"})
 			}
 			stream("packets.jsonl", packets)
 			emission := []probeRecord{{Event: "capture-ready"}, {Event: "network-packet", Remote: "10.0.0.2:41000"}, {Event: "capture-complete", Dropped: new(uint32(0)), KernelPackets: new(uint32(1)), Captured: new(uint32(1))}}

@@ -49,8 +49,12 @@ func run() (result error) {
 		ns := f.String("namespace", "", "policy namespace")
 		resolver := f.String("resolver", "", "private controlled resolver fixture")
 		policy := f.Bool("policy", false, "render policy before workload creation")
+		api := f.Bool("api-policy", false, "render the private API endpoint policy from resolved enrollment inputs")
 		if err := f.Parse(os.Args[2:]); err != nil {
 			return err
+		}
+		if *api {
+			return consumer.RenderAPIPolicy(os.Stdin, os.Stdout)
 		}
 		if *policy {
 			if *resolver != "" {

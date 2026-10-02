@@ -34,7 +34,7 @@ func TestInstallationSettingsMatchBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, change := range [][2]string{{"", ""}, {"linuxDataplane: Iptables", "linuxDataplane: BPF"}, {"encapsulation: VXLAN", "encapsulation: IPIP"}, {"kubeProxyManagement: Disabled", "kubeProxyManagement: Enabled"}, {"10.244.0.0/16", "fd00::/64"}, {"calico-v3.32.2", "calico-v0.0.0"}} {
+	for _, change := range [][2]string{{"", ""}, {"defaultEndpointToHostAction: Accept", "defaultEndpointToHostAction: Drop"}, {"ipv6Support: false", "ipv6Support: true"}, {"bpfEnabled: false", "bpfEnabled: true"}, {"chainInsertMode: Insert", "chainInsertMode: Append"}, {"calico-static-v3.32.2", "calico-static-v0.0.0"}} {
 		t.Run(change[0], func(t *testing.T) {
 			input := string(data)
 			if change[0] != "" {

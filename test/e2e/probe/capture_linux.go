@@ -7,9 +7,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"flag"
-	"fmt"
 	"net"
-	"net/netip"
 	"os"
 	"time"
 
@@ -17,7 +15,7 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Capture emits only IPv4 TCP/UDP headers. It runs in an owned receiver network
+// Capture emits IPv4 transport headers and ICMP echo identifiers. It runs in an owned receiver network
 // namespace, never in the unprivileged application under test.
 func capture(ctx context.Context, f *flag.FlagSet, args []string) error {
 	port := f.Int("port", 0, "destination port")
@@ -108,27 +106,4 @@ func htons(n uint16) uint16 {
 	var b [2]byte
 	binary.BigEndian.PutUint16(b[:], n)
 	return binary.NativeEndian.Uint16(b[:])
-}
-
-func packetHeader(b []byte, port uint16) (map[string]any, bool) {
-	if len(b) < 34 || binary.BigEndian.Uint16(b[12:14]) != unix.ETH_P_IP {
-		return nil, false
-	}
-	ip := b[14:]
-	ihl := int(ip[0]&15) * 4
-	if ip[0]>>4 != 4 || ihl < 20 || len(ip) < ihl+8 || binary.BigEndian.Uint16(ip[6:8])&0x1fff != 0 {
-		return nil, false
-	}
-	proto := "tcp"
-	if ip[9] == 17 {
-		proto = "udp"
-	} else if ip[9] != 6 {
-		return nil, false
-	}
-	transport := ip[ihl:]
-	if binary.BigEndian.Uint16(transport[2:4]) != port {
-		return nil, false
-	}
-	src, dst := netip.AddrFrom4([4]byte(ip[12:16])), netip.AddrFrom4([4]byte(ip[16:20]))
-	return map[string]any{"event": "network-packet", "protocol": proto, "remote": fmt.Sprintf("%s:%d", src, binary.BigEndian.Uint16(transport[:2])), "destination": fmt.Sprintf("%s:%d", dst, port), "time": time.Now().UTC()}, true
 }

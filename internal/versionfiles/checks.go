@@ -1,11 +1,9 @@
 package main
 
 import (
-	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/netip"
 	"strings"
 
 	"github.com/egress-gateway/egress-gateway-networking/baseline"
@@ -83,55 +81,83 @@ func checkWorkflow(data []byte, version string) error {
 }
 
 func checkInstallation(data []byte, v baseline.Versions) error {
-	decoder := yaml.NewDecoder(bytes.NewReader(data))
-	found := false
-	for {
-		var doc struct {
-			Kind     string
-			Metadata struct{ Labels map[string]string }
-			Spec     struct {
-				CalicoNetwork struct {
-					LinuxDataplane      string `yaml:"linuxDataplane"`
-					KubeProxyManagement string `yaml:"kubeProxyManagement"`
-					IPPools             []struct {
-						CIDR          string `yaml:"cidr"`
-						Encapsulation string
-					} `yaml:"ipPools"`
-				} `yaml:"calicoNetwork"`
-			}
+	var doc struct {
+		Kind     string
+		Metadata struct {
+			Name   string
+			Labels map[string]string
 		}
-		if err := decoder.Decode(&doc); err != nil {
-			if errors.Is(err, io.EOF) {
-				break
-			}
-			return err
+		Spec struct {
+			HostAction string `yaml:"defaultEndpointToHostAction"`
+			ChainMode  string `yaml:"chainInsertMode"`
+			IPv6       *bool  `yaml:"ipv6Support"`
+			BPF        *bool  `yaml:"bpfEnabled"`
 		}
-		if doc.Kind != "Installation" {
-			continue
-		}
-		if found {
-			return errors.New("duplicate Calico Installation")
-		}
-		found = true
-		if doc.Metadata.Labels["networking.egress/managed"] != "calico-"+v.Calico["CALICO_VERSION"] {
-			return errors.New("Calico installation label differs from baseline")
-		}
-		n := doc.Spec.CalicoNetwork
-		if n.LinuxDataplane != v.Configuration.Dataplane || len(n.IPPools) == 0 {
-			return errors.New("Calico dataplane or pools differ from baseline")
-		}
-		if !v.Configuration.KubeProxy || n.KubeProxyManagement != "Disabled" {
-			return errors.New("Calico must retain the baseline's separately managed kube-proxy")
-		}
-		for _, pool := range n.IPPools {
-			prefix, err := netip.ParsePrefix(pool.CIDR)
-			if err != nil || v.Configuration.IPFamily != "IPv4" || !prefix.Addr().Is4() || pool.Encapsulation != v.Configuration.Encapsulation {
-				return errors.New("Calico pool family or encapsulation differs from baseline")
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return err
+	}
+	if doc.Kind != "FelixConfiguration" || doc.Metadata.Name != "default" || doc.Metadata.Labels["networking.egress/managed"] != "calico-static-"+v.Calico["CALICO_VERSION"] || doc.Spec.HostAction != "Accept" || doc.Spec.ChainMode != "Insert" || doc.Spec.IPv6 == nil || *doc.Spec.IPv6 || doc.Spec.BPF == nil || *doc.Spec.BPF {
+		return errors.New("Calico Felix configuration differs from the supported boundary")
+	}
+	return nil
+}
+
+func checkCalicoConfiguration(node, config []byte, v baseline.Versions) error {
+	var ds struct {
+		Spec struct {
+			Template struct {
+				Spec struct {
+					Containers []struct {
+						Name string
+						Env  []struct{ Name, Value string }
+					}
+				}
 			}
 		}
 	}
-	if !found {
-		return errors.New("missing Calico Installation")
+	if err := json.Unmarshal(node, &ds); err != nil {
+		return err
+	}
+	env := map[string]string{}
+	for _, c := range ds.Spec.Template.Spec.Containers {
+		if c.Name == "calico-node" {
+			for _, e := range c.Env {
+				env[e.Name] = e.Value
+			}
+		}
+	}
+	for key, value := range map[string]string{"CALICO_IPV4POOL_CIDR": "10.244.0.0/16", "CALICO_IPV4POOL_IPIP": "Never", "CALICO_IPV4POOL_VXLAN": "Always", "FELIX_BPFENABLED": "false", "FELIX_DEFAULTENDPOINTTOHOSTACTION": "ACCEPT", "FELIX_CHAININSERTMODE": "Insert", "FELIX_IPV6SUPPORT": "false", "FELIX_ENDPOINTSTATUSPATHPREFIX": "/var/run/calico"} {
+		if env[key] != value {
+			return fmt.Errorf("Calico %s differs from supported configuration", key)
+		}
+	}
+	if v.Configuration.IPFamily != "IPv4" || v.Configuration.Dataplane != "Iptables" || v.Configuration.Encapsulation != "VXLAN" || !v.Configuration.KubeProxy {
+		return errors.New("unsupported baseline dataplane")
+	}
+	var cm struct{ Data map[string]string }
+	if err := json.Unmarshal(config, &cm); err != nil {
+		return err
+	}
+	if cm.Data["calico_backend"] != "vxlan" {
+		return errors.New("Calico backend must be VXLAN")
+	}
+	var cni struct {
+		Plugins []struct {
+			Type string
+			Wait int `json:"policy_setup_timeout_seconds"`
+			IPAM struct {
+				IPv4 string `json:"assign_ipv4"`
+				IPv6 string `json:"assign_ipv6"`
+			}
+			Sysctl map[string]string
+		}
+	}
+	if err := json.Unmarshal([]byte(strings.ReplaceAll(cm.Data["cni_network_config"], "__CNI_MTU__", "0")), &cni); err != nil {
+		return err
+	}
+	if len(cni.Plugins) != 3 || cni.Plugins[0].Type != "calico" || cni.Plugins[0].Wait != 10 || cni.Plugins[0].IPAM.IPv4 != "true" || cni.Plugins[0].IPAM.IPv6 != "false" || cni.Plugins[1].Type != "tuning" || len(cni.Plugins[1].Sysctl) != 2 || cni.Plugins[1].Sysctl["net.ipv6.conf.all.disable_ipv6"] != "1" || cni.Plugins[1].Sysctl["net.ipv6.conf.default.disable_ipv6"] != "1" || cni.Plugins[2].Type != "portmap" {
+		return errors.New("CNI chain must wait for policy and disable all Pod IPv6 before startup")
 	}
 	return nil
 }

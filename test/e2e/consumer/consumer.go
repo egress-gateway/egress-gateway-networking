@@ -34,6 +34,18 @@ func RenderPolicy(out io.Writer, namespace string) error {
 	return json.NewEncoder(out).Encode(&network.NetworkPolicy{TypeMeta: meta.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"}, ObjectMeta: meta.ObjectMeta{Name: name, Namespace: namespace}, Spec: p.Spec})
 }
 
+func RenderAPIPolicy(in io.Reader, out io.Writer) error {
+	var n enrollment.Network
+	if err := json.NewDecoder(in).Decode(&n); err != nil {
+		return err
+	}
+	p, err := enrollment.ExpandPolicy(n)
+	if err != nil {
+		return err
+	}
+	return json.NewEncoder(out).Encode(&network.NetworkPolicy{TypeMeta: meta.TypeMeta{APIVersion: "networking.k8s.io/v1", Kind: "NetworkPolicy"}, ObjectMeta: meta.ObjectMeta{Name: "api-case", Namespace: n.Namespace}, Spec: p.Spec})
+}
+
 func RenderPod(in io.Reader, out io.Writer) error {
 	data, err := io.ReadAll(in)
 	if err != nil {

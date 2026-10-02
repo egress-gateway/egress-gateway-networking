@@ -49,3 +49,57 @@ Feature: Calico keeps the network closed across faults
       | id    | phase      |
       | N1-20 | first-app  |
       | N1-21 | first-init |
+
+  @tcp-startup
+  Scenario Outline: <id> TCP remains isolated from the first possible packet
+    When the network probe "tcp" targets "np-external" during "<phase>"
+    Then the network contract "<contract>" has attributable packet and enforcement evidence
+
+    Examples:
+      | id        | phase      | contract     |
+      | N1-20-TCP | first-init | first-packet |
+      | N1-21-TCP | first-app  | first-packet |
+      | C3-03-TCP | felix-new  | startup      |
+      | C3-04-TCP | felix-init | startup      |
+
+  @protocol-closure
+  Scenario Outline: <id> Available non-TCP/UDP protocols cannot leave the protected Pod
+    When the network probe "<protocol>" targets "np-protocol" during "healthy"
+    Then the network contract "protocol-closure" has attributable packet and enforcement evidence
+
+    Examples:
+      | id    | protocol |
+      | N1-23 | sctp     |
+      | N1-24 | icmp     |
+      | N1-25 | udplite  |
+
+  @protocol-closure
+  Scenario: N1-26 Remaining IP socket protocols are unavailable to the application
+    When the network probe "inventory" targets "np-socket-matrix" during "healthy"
+    Then the network contract "socket-matrix" has attributable packet and enforcement evidence
+
+  @ipv6-closure
+  Scenario Outline: <id> IPv6 closure precedes business execution
+    When the network probe "ipv6" targets "np-ipv6" during "<phase>"
+    Then the network contract "ipv6-closure" has attributable packet and enforcement evidence
+
+    Examples:
+      | id    | phase           |
+      | N1-22 | first-execution |
+      | N1-27 | cni-failure     |
+
+  @api-endpoint
+  Scenario Outline: <id> API connectivity follows the exact trusted endpoint allowance
+    When the network probe "tcp" targets "<target>" during "<phase>"
+    Then the network contract "api-endpoint" has attributable packet and enforcement evidence
+
+    Examples:
+      | id    | target      | phase      |
+      | A1-01 | api-direct  | deny       |
+      | A1-02 | api-service | deny       |
+      | A1-03 | api-direct  | allow      |
+      | A1-04 | api-service | allow      |
+      | A1-05 | api-direct  | wrong-port |
+      | A1-06 | api-service | wrong-port |
+      | A1-07 | api-direct  | revoke     |
+      | A1-08 | api-service | revoke     |

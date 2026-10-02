@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -81,6 +82,9 @@ func run(ctx context.Context, args []string) error {
 	}
 	if args[0] == "privileges" {
 		return privileges(f, args[1:])
+	}
+	if args[0] == "network-state" {
+		return networkState(ctx, f, args[1:])
 	}
 	if args[0] == "drops" {
 		return traceDrops(ctx, f, args[1:])
@@ -180,6 +184,8 @@ func serve(ctx context.Context, f *flag.FlagSet, args []string) error {
 	httpsPort := f.String("https", "", "HTTPS listen port")
 	tcpPort := f.String("tcp", "", "TCP echo listen port")
 	udpPorts := f.String("udp", "", "comma separated UDP echo ports")
+	sctpPort := f.String("sctp", "", "SCTP echo listen port")
+	udplitePort := f.String("udplite", "", "UDP-Lite echo listen port")
 	quicPort := f.String("quic", "", "HTTP/3 listen port")
 	dnsPort := f.String("dns", "", "TCP and UDP DNS listen port")
 	certDir := f.String("cert-dir", "/certs", "private test certificates")
@@ -190,6 +196,16 @@ func serve(ctx context.Context, f *flag.FlagSet, args []string) error {
 	start := func(protocol, port string, fn func() error) {
 		event("ready", protocol, "", port, "")
 		go func() { errCh <- fn() }()
+	}
+	for _, endpoint := range []struct{ protocol, port string }{{"sctp", *sctpPort}, {"udplite", *udplitePort}} {
+		if endpoint.port == "" {
+			continue
+		}
+		listener, err := protocolListener(ctx, endpoint.protocol, endpoint.port)
+		if err != nil {
+			return err
+		}
+		start(endpoint.protocol, endpoint.port, listener)
 	}
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		id := r.Header.Get("X-Networking-Test-Id")
@@ -370,25 +386,26 @@ func dnsAnswer(data []byte, remote string) ([]byte, error) {
 }
 
 type observation struct {
-	UID       int       `json:"uid"`
-	ID        string    `json:"id"`
-	Sequence  int       `json:"sequence"`
-	Protocol  string    `json:"protocol"`
-	Target    string    `json:"target"`
-	Started   time.Time `json:"started"`
-	Finished  time.Time `json:"finished"`
-	Attempted bool      `json:"attempted"`
-	Connected bool      `json:"connected"`
-	Success   bool      `json:"success"`
-	Local     string    `json:"local,omitempty"`
-	Remote    string    `json:"remote,omitempty"`
-	Digest    string    `json:"digest,omitempty"`
-	Response  string    `json:"response,omitempty"`
-	Error     string    `json:"error,omitempty"`
+	UID         int       `json:"uid"`
+	ID          string    `json:"id"`
+	Sequence    int       `json:"sequence"`
+	Protocol    string    `json:"protocol"`
+	Target      string    `json:"target"`
+	Started     time.Time `json:"started"`
+	Finished    time.Time `json:"finished"`
+	Attempted   bool      `json:"attempted"`
+	Connected   bool      `json:"connected"`
+	Success     bool      `json:"success"`
+	Local       string    `json:"local,omitempty"`
+	Remote      string    `json:"remote,omitempty"`
+	Digest      string    `json:"digest,omitempty"`
+	Response    string    `json:"response,omitempty"`
+	Error       string    `json:"error,omitempty"`
+	SocketError int       `json:"socket_errno,omitzero"`
 }
 
 func request(ctx context.Context, f *flag.FlagSet, args []string) error {
-	protocol := f.String("protocol", "http", "http|https|tcp|udp|quic|dns-udp|dns-tcp|tls")
+	protocol := f.String("protocol", "http", "http|https|tcp|udp|quic|dns-udp|dns-tcp|tls|sctp|udplite|icmp")
 	target := f.String("target", "", "host:port")
 	id := f.String("id", "", "correlation identifier")
 	serverName := f.String("server-name", "origin.test", "TLS peer name")
@@ -431,7 +448,7 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 			result <- err
 		}()
 	}
-	if !strings.Contains("|http|https|tcp|udp|quic|dns-udp|dns-tcp|tls|", "|"+*protocol+"|") {
+	if !strings.Contains("|http|https|tcp|udp|quic|dns-udp|dns-tcp|tls|sctp|udplite|icmp|", "|"+*protocol+"|") {
 		return errors.New("unsupported protocol")
 	}
 	tlsConfig := &tls.Config{MinVersion: tls.VersionTLS12, ServerName: *serverName}
@@ -545,6 +562,9 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 		cctx, cancel := context.WithTimeout(probeCtx, *timeout)
 		o := observation{UID: os.Getuid(), ID: *id, Sequence: sequence, Protocol: *protocol, Target: *target, Started: time.Now().UTC(), Attempted: true}
 		err := func() error {
+			if *protocol == "sctp" || *protocol == "udplite" || *protocol == "icmp" {
+				return protocolRequest(cctx, &o)
+			}
 			if *protocol == "http" || *protocol == "https" || *protocol == "quic" {
 				scheme := "http"
 				if *protocol != "http" {
@@ -610,6 +630,9 @@ func request(ctx context.Context, f *flag.FlagSet, args []string) error {
 			}
 			var err error
 			if connection == nil {
+				if *connectOnly && !*persistent && runtime.GOOS == "linux" {
+					return protocolRequest(cctx, &o)
+				}
 				if *protocol == "tls" {
 					connection, err = (&tls.Dialer{Config: tlsConfig}).DialContext(cctx, "tcp", *target)
 				} else {

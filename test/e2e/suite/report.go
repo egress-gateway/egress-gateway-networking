@@ -99,7 +99,7 @@ func NewProfileReport(root, dir, profile, mode, sha string, dirty bool) (*Report
 	for _, feature := range features {
 		for _, p := range feature.Pickles {
 			id := caseID(p.Name)
-			if !regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]{2}$`).MatchString(id) || ids[id] {
+			if !regexp.MustCompile(`^[A-Z][A-Z0-9]*-[0-9]{2}(-TCP)?$`).MatchString(id) || ids[id] {
 				return nil, fmt.Errorf("invalid or duplicate case ID in %q", p.Name)
 			}
 			ids[id] = true
@@ -246,7 +246,7 @@ func (r *Report) Markdown() string {
 	if r.RunError != "" {
 		fmt.Fprintf(&b, "Run failure: %s\n\n", escape(r.RunError))
 	}
-	b.WriteString("Results cover the tested IPv4 TCP/UDP scope only. Unsupported-path closure is tracked separately in #13.\n\n| Case / scenario | Security requirement | Actual security result | Functionality | Expected | Acceptance | Duration | Evidence / reason |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n")
+	b.WriteString("Results cover the pinned single-node IPv4 installation and restricted application envelope. IPv6 communication is disabled before workload execution; non-TCP/UDP paths require the separate protocol closure cases. API connectivity does not imply authentication or RBAC permission.\n\n| Case / scenario | Security requirement | Actual security result | Functionality | Expected | Acceptance | Duration | Evidence / reason |\n| --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, c := range r.Cases {
 		mark := "❌ FAIL"
 		if r.CaseAccepted(c) {
