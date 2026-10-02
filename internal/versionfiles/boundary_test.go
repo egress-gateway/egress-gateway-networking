@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"os/exec"
 	"strings"
@@ -78,6 +79,10 @@ func TestCNICompositionChecksOnlySelectedFoundationScope(t *testing.T) {
 	}
 	base := config["plugins"].([]any)
 	suffix := map[string]any{"type": "consumer-owned"}
+	withoutSNAT := maps.Clone(base[2].(map[string]any))
+	withoutSNAT["snat"] = false
+	withoutPortMappings := maps.Clone(base[2].(map[string]any))
+	withoutPortMappings["capabilities"] = map[string]any{"portMappings": false}
 	for _, tc := range []struct {
 		name, scope string
 		plugins     []any
@@ -90,6 +95,10 @@ func TestCNICompositionChecksOnlySelectedFoundationScope(t *testing.T) {
 		{"consumer suffix", "foundation", append(append([]any{}, base...), suffix), true},
 		{"missing tuning", "foundation", []any{base[0], base[2], suffix}, false},
 		{"wrong order", "foundation", []any{base[0], base[2], base[1], suffix}, false},
+		{"standalone without snat", "standalone", []any{base[0], base[1], withoutSNAT}, false},
+		{"composed without snat", "foundation", []any{base[0], base[1], withoutSNAT, suffix}, false},
+		{"standalone without port mappings", "standalone", []any{base[0], base[1], withoutPortMappings}, false},
+		{"composed without port mappings", "foundation", []any{base[0], base[1], withoutPortMappings, suffix}, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			config["plugins"] = tc.plugins

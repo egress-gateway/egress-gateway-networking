@@ -8,4 +8,5 @@
 .plugins[1].type=="tuning" and (.plugins[1].sysctl|length)==2 and
 .plugins[1].sysctl["net.ipv6.conf.all.disable_ipv6"]=="1" and
 .plugins[1].sysctl["net.ipv6.conf.default.disable_ipv6"]=="1" and
-.plugins[2].type=="portmap"
+.plugins[2].type=="portmap" and .plugins[2].snat==true and
+.plugins[2].capabilities.portMappings==true
