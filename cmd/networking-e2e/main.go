@@ -43,6 +43,20 @@ func run() (result error) {
 		}
 		return consumer.RenderAcceptance(os.Stdout, *image)
 	}
+	if os.Args[1] == "render-integration" {
+		f := flag.NewFlagSet("render-integration", flag.ContinueOnError)
+		image := f.String("image", "", "private integration probe image")
+		name := f.String("name", "", "private fixture name")
+		id := f.String("id", "", "correlation identifier")
+		target := f.String("target", "", "controlled forbidden receiver")
+		if err := f.Parse(os.Args[2:]); err != nil {
+			return err
+		}
+		if *image == "" || *name == "" || *id == "" || *target == "" {
+			return errors.New("integration image, name, id and target required")
+		}
+		return consumer.RenderIntegration(os.Stdout, *image, *name, *id, *target)
+	}
 	// Private fixture operation used by Shell; public consumers import enrollment.
 	if os.Args[1] == "render-fixture" {
 		f := flag.NewFlagSet("render-fixture", flag.ContinueOnError)

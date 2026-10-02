@@ -62,3 +62,46 @@ func TestEffectiveBoundaryRejectsMissingDisablementAndWrongNodeAction(t *testing
 		})
 	}
 }
+
+func TestCNICompositionChecksOnlySelectedFoundationScope(t *testing.T) {
+	data, err := os.ReadFile("../../install/calico/config-patch.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cm struct{ Data map[string]string }
+	if err := json.Unmarshal(data, &cm); err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(strings.ReplaceAll(cm.Data["cni_network_config"], "__CNI_MTU__", "0")), &config); err != nil {
+		t.Fatal(err)
+	}
+	base := config["plugins"].([]any)
+	suffix := map[string]any{"type": "consumer-owned"}
+	for _, tc := range []struct {
+		name, scope string
+		plugins     []any
+		accepted    bool
+	}{
+		{"standalone", "standalone", base, true},
+		{"unknown scope", "unknown", base, false},
+		{"foundation alone", "foundation", base, true},
+		{"unselected composition", "standalone", append(append([]any{}, base...), suffix), false},
+		{"consumer suffix", "foundation", append(append([]any{}, base...), suffix), true},
+		{"missing tuning", "foundation", []any{base[0], base[2], suffix}, false},
+		{"wrong order", "foundation", []any{base[0], base[2], base[1], suffix}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config["plugins"] = tc.plugins
+			input, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(t.Context(), "jq", "-e", "--arg", "scope", tc.scope, "-f", "../../install/scripts/check-cni.jq")
+			cmd.Stdin = strings.NewReader(string(input))
+			if err := cmd.Run(); (err == nil) != tc.accepted {
+				t.Fatalf("accepted=%t: %v", err == nil, err)
+			}
+		})
+	}
+}

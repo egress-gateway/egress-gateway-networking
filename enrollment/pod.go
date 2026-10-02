@@ -16,6 +16,9 @@ type TrustedSpec struct {
 	InitContainers []core.Container `json:"initContainers,omitempty"`
 	Containers     []core.Container `json:"containers,omitempty"`
 	Volumes        []core.Volume    `json:"volumes,omitempty"`
+	// NetworkInitContainers separately authorizes named terminating InitContainers
+	// to administer the shared Pod network before business or resident execution.
+	NetworkInitContainers []string `json:"networkInitContainers,omitempty"`
 }
 
 type Options struct {
@@ -118,7 +121,16 @@ func ExpandPod(input *core.Pod, o Options) (*core.Pod, error) {
 			return nil, fmt.Errorf("trusted.volumes[%s]: not referenced by trusted components", name)
 		}
 	}
+	networkPreparation := map[string]bool{}
+	for _, name := range o.Trusted.NetworkInitContainers {
+		e, ok := expected[name]
+		if networkPreparation[name] || !ok || !e.init || e.container.RestartPolicy != nil {
+			return nil, fmt.Errorf("trusted.networkInitContainers[%s]: unique terminating trusted init required", name)
+		}
+		networkPreparation[name] = true
+	}
 	seen := map[string]bool{}
+	businessOrResidentStarted := false
 	for index, group := range [][]core.Container{p.Spec.InitContainers, p.Spec.Containers} {
 		for _, c := range group {
 			if c.Name == "" || seen[c.Name] {
@@ -133,7 +145,13 @@ func ExpandPod(input *core.Pod, o Options) (*core.Pod, error) {
 				prep = index == 0 && c.RestartPolicy == nil
 				delete(expected, c.Name)
 			}
-			if err := validateSecurity(c, p.Spec.SecurityContext, prep); err != nil {
+			if networkPreparation[c.Name] && businessOrResidentStarted {
+				return nil, fmt.Errorf("spec.initContainers[%s]: network preparation must precede business and resident containers", c.Name)
+			}
+			if !prep {
+				businessOrResidentStarted = true
+			}
+			if err := validateSecurity(c, p.Spec.SecurityContext, prep, networkPreparation[c.Name]); err != nil {
 				return nil, err
 			}
 		}
@@ -156,7 +174,7 @@ func ExpandPod(input *core.Pod, o Options) (*core.Pod, error) {
 	return p, nil
 }
 
-func validateSecurity(c core.Container, p *core.PodSecurityContext, preparation bool) error {
+func validateSecurity(c core.Container, p *core.PodSecurityContext, preparation, networkPreparation bool) error {
 	s := c.SecurityContext
 	if s == nil {
 		return fmt.Errorf("%s.securityContext: explicit restricted context required", c.Name)
@@ -177,7 +195,9 @@ func validateSecurity(c core.Container, p *core.PodSecurityContext, preparation 
 		return fmt.Errorf("%s.securityContext: privilege escalation prohibited; drop ALL required", c.Name)
 	}
 	for _, cap := range s.Capabilities.Add {
-		if !preparation || !slices.Contains([]core.Capability{"CHOWN", "FOWNER", "DAC_OVERRIDE"}, cap) {
+		fileCapability := slices.Contains([]core.Capability{"CHOWN", "FOWNER", "DAC_OVERRIDE"}, cap)
+		networkCapability := networkPreparation && (cap == "NET_ADMIN" || cap == "NET_RAW")
+		if !preparation || !(fileCapability || networkCapability) {
 			return fmt.Errorf("%s.securityContext.capabilities: %s unsupported", c.Name, cap)
 		}
 	}

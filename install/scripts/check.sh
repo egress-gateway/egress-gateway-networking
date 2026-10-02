@@ -15,7 +15,7 @@ while IFS= read -r pod; do
   # Inspect effective files and rules without another privileged workload.
   files=$(k -n calico-system exec "$pod" -c calico-node -- sh -c 'for f in /host/etc/cni/net.d/*.conf /host/etc/cni/net.d/*.conflist; do [ ! -f "$f" ] || basename "$f"; done')
   [[ "$files" == 10-calico.conflist ]] || { echo 'unexpected effective primary CNI files' >&2; exit 2; }
-  k -n calico-system exec "$pod" -c calico-node -- cat /host/etc/cni/net.d/10-calico.conflist | jq -e -f "$root/install/scripts/check-cni.jq" >/dev/null
+  k -n calico-system exec "$pod" -c calico-node -- cat /host/etc/cni/net.d/10-calico.conflist | jq -e --arg scope "$cni_scope" -f "$root/install/scripts/check-cni.jq" >/dev/null
   effective=$(k -n calico-system exec "$pod" -c calico-node -- sh -c 'printf "%s|%s|%s|%s|%s" "$FELIX_DEFAULTENDPOINTTOHOSTACTION" "$FELIX_IPV6SUPPORT" "$FELIX_BPFENABLED" "$FELIX_ENDPOINTSTATUSPATHPREFIX" "$FELIX_CHAININSERTMODE"')
   [[ "$effective" == 'ACCEPT|false|false|/var/run/calico|Insert' ]] || { echo 'effective Felix environment differs' >&2; exit 2; }
   k -n calico-system exec "$pod" -c calico-node -- iptables -S cali-wl-to-host | awk '/^-A / {n++; if(n==1 && /-j cali-from-wl-dispatch$/) policy=1; if(n==2 && /Configured DefaultEndpointToHostAction/ && /-j ACCEPT$/) accept=1} END {exit !(n==2 && policy && accept)}'

@@ -1,0 +1,17 @@
+# Test-only upstream Istio 1.31.0 CNI, without istiod or Gateway application images.
+image: docker.io/istio/install-cni:1.31.0@sha256:8cef43ba08ae1af846d0e474591f625cd2dd6b2c0df0efcb17faef0d978ef246
+cniBinDir: /opt/cni/bin
+cniConfDir: /etc/cni/net.d
+cniConfFileName: 10-calico.conflist
+chained: true
+ambient:
+  enabled: false
+excludeNamespaces:
+  - kube-system
+  - networking-cni
+repair:
+  enabled: true
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
