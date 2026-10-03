@@ -21,6 +21,10 @@ See [the integration contract](docs/enrollment.md) and
 prints policy then Pod and checks an intentionally rejected substitution. Its images
 are illustrative inputs, not certified Gateway implementations.
 
+[Consumer-owned CNI composition](docs/cni-composition.md) adds an explicit check
+of the foundation configuration in a composed chain. `TrustedSpec.NetworkInitContainers` separately
+authorizes terminating network preparation; default permissions remain unchanged.
+
 ## Supported platform
 
 The version authority is [baseline/versions.json](baseline/versions.json):

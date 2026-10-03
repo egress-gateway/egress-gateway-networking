@@ -4,8 +4,10 @@ The suite installs the pinned upstream Calico manifest and dataplane images on a
 IPv4 kind cluster without another CNI. It retains iptables/VXLAN, kube-proxy,
 effective `defaultEndpointToHostAction: Accept` after workload egress policy,
 Calico CNI policy setup waiting and a chained tuning plugin that disables Pod IPv6
-(all/default, including loopback) before business execution. No Istio
-installation, webhook, proxy image or governance fixture is involved.
+(all/default, including loopback) before business execution. Default installation
+and standalone cases require no Istio or governance fixture. The bounded I1-01
+[integration case](cni-composition.md) temporarily adds upstream Istio CNI and an
+independent privileged initializer; it restores the standalone configuration afterward.
 
 Installation verifies upstream manifest checksums and existing resource ownership;
 refuses an initialized foreign primary network or any Operator installation; and
@@ -25,6 +27,10 @@ in-place migration or upgrades. The caller owns the cluster, workload objects an
 - Additive allow negative control deliberately permits a forbidden tuple. It must
   be detected as a violation, removed, and isolation reverified. Its command returns
   nonzero only as expected evidence when `negative-control.json` says verified=true.
+- Explicit CNI composition and separately authorized network preparation retain
+  startup denial, IPv6 closure and restricted business privileges through CNI/Calico
+  restart and a policy-unavailable startup window. Actual in-Pod capture/preparation
+  rules are observed; direct traffic proves confinement independently of a proxy.
 
 Denial requires a real sender attempt and emission, a healthy stable receiver before
 and after, complete lossless capture, and attributable Calico DROP evidence. A timeout,

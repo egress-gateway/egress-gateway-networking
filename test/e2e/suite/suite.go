@@ -104,6 +104,15 @@ func (s *Suite) run(ctx context.Context, tags string) error {
 				return s.Execute(ctx, "test/e2e/scripts/"+script+".sh", "--state-dir", s.State, "--artifacts", dir, "--test-id", id)
 			}
 			sc.Step(`^the independent enrollment bindings are ready$`, func() error { return operation("enrollment-up") })
+			sc.Step(`^the fixed Istio CNI combination is exercised with trusted network preparation$`, func() error {
+				networkFault = true
+				return operation("cni-integration")
+			})
+			sc.Step(`^combination startup, IPv6, denial and recovery have attributable evidence$`, func() error {
+				var err error
+				observed, reason, err = evaluateIntegration(dir, id)
+				return err
+			})
 
 			sc.Step(`^restricted components cannot acquire identity or network privileges$`, func() error {
 				if err := operation("enrollment-privileges"); err != nil {

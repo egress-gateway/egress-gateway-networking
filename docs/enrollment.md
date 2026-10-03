@@ -50,9 +50,23 @@ trusted components require explicit nonzero UID/GID (or safe Pod inheritance),
 `drop: [ALL]`, no added capabilities and `allowPrivilegeEscalation: false`.
 Only a matched terminating init container may use root and add CHOWN, FOWNER and
 DAC_OVERRIDE for file preparation. Native sidecars (`restartPolicy: Always`) remain
-resident and cannot use this exception. NET_ADMIN and NET_RAW are unsupported even
-for trusted components; integration needing them requires a separately accepted
-contract extension.
+resident and cannot use this exception.
+
+`TrustedSpec.NetworkInitContainers` explicitly authorizes named entries of
+`TrustedSpec.InitContainers` to additionally request NET_ADMIN and NET_RAW. The
+default empty list preserves the file-only envelope, including for matched trusted
+containers. Names must be unique and refer to terminating init containers; matching
+the independently supplied complete execution specification is still required.
+Authorized network preparation must precede every business init and resident
+component. The helper rejects incorrect ordering instead of moving containers.
+Business and resident containers retain zero added capabilities; privileged mode,
+privilege escalation and capabilities outside these bounded sets remain rejected.
+
+The authorized code can change the shared network namespace. The platform owns its
+image/configuration integrity; Gateway owns its management-isolation implementation.
+Approval must establish that this initializer preserves external confinement and
+IPv6 disablement through preparation and subsequent business execution. Declaration
+matching does not sandbox arbitrary network-administration code or prove its effects.
 
 Capabilities are configured on individual containers. Network operations can affect
 the Pod's shared network namespace; NetworkPolicy also covers the entire Pod.

@@ -16,8 +16,12 @@
 - Keep generated state under `.e2e/state` and safe reports under `.e2e/artifacts`.
   Never commit/upload kubeconfig, Secrets, keys or complete proxy config dumps.
 - Only Calico enforce is supported. No Istio baseline success mode or compatibility
-  adapter. Trusted specifications come from the platform independently of workloads.
+  adapter. The composition acceptance case uses an upstream CNI fixture and an independent
+  initializer, without Gateway application dependencies. Istio-specific details stay
+  inside the test suite and are not public platform requirements. Trusted specifications come
+  from the platform independently of workloads.
   Keep existing security checks and independent receiver/enforcement evidence.
-- #13 owns new protocol closure and four new TCP first-packet cases. Do not expand
+- #18 adds explicit CNI composition and separately authorized terminating network
+  preparation. Keep default installation and permissions unchanged. Do not expand
   supported security claims from a subset of passing tests. No merge/release/deploy
   is implied by acceptance; parent V01-02 remains open.

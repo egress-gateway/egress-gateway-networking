@@ -5,6 +5,7 @@ source "$(dirname "$0")/calico-fault-lib.sh"
 need_id
 [[ $(jq -r .profile "$state_dir/environment.json") == calico && ( "$protocol" == udp || "$protocol" == tcp ) && "$target" == np-external ]] || exit 2
 [[ "$phase" == felix-new || "$phase" == felix-init || "$phase" == first-app || "$phase" == first-init ]] || exit 2
+[[ -z "$client" || ( "$client" == integration && "$protocol" == tcp && ( "$phase" == first-init || "$phase" == felix-init ) ) ]] || exit 2
 receiver_owned origin; receiver_owned quic
 origin=$(jq -er .origin "$state_dir/egress.json")
 port=9001
@@ -40,7 +41,11 @@ if [[ "$phase" == felix-* ]]; then felix_pause; fi
 # and at that precision so a Pod created later in this second is not pre-fault.
 fault_start=$(node_stamp '+%Y-%m-%dT%H:%M:%SZ')
 docker exec "$cluster-control-plane" iptables-save -c -t filter > "$artifacts/rules-before.txt"
-jq -n --arg name "$source_pod" --arg image "$(cat "$state_dir/probe-image")" --arg id "$test_id" --arg address "$address" --arg phase "$phase" --arg protocol "$protocol" '{apiVersion:"v1",kind:"Pod",metadata:{name:$name,namespace:"networking-np",labels:{"networking.egress/protected":"true","networking.egress/binding":"np"}},spec:{restartPolicy:"Never",automountServiceAccountToken:false,containers:[{name:"keeper",image:$image,imagePullPolicy:"Never",args:["idle"],securityContext:{runAsUser:10000,allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]}}}]}} | {pod:.,probe:{name:"first-probe",image:$image,imagePullPolicy:"Never",args:["request","--protocol",$protocol,"--target",$address,"--id",$id,"--duration","15s","--timeout","300ms"],securityContext:{runAsUser:10000,allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]}}}} | if $phase=="felix-init" or $phase=="first-init" then .pod.spec.initContainers=[.probe] else .pod.spec.containers += [.probe] end | .pod' | protected_pod | k create -f - >/dev/null
+if [[ "$client" == integration ]]; then
+  "$NETWORKING_E2E_BIN" render-integration --image "$(cat "$state_dir/integration-image")" --name "$source_pod" --id "$test_id" --target "$address" | k create -f - >/dev/null
+else
+  jq -n --arg name "$source_pod" --arg image "$(cat "$state_dir/probe-image")" --arg id "$test_id" --arg address "$address" --arg phase "$phase" --arg protocol "$protocol" '{apiVersion:"v1",kind:"Pod",metadata:{name:$name,namespace:"networking-np",labels:{"networking.egress/protected":"true","networking.egress/binding":"np"}},spec:{restartPolicy:"Never",automountServiceAccountToken:false,containers:[{name:"keeper",image:$image,imagePullPolicy:"Never",args:["idle"],securityContext:{runAsUser:10000,allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]}}}]}} | {pod:.,probe:{name:"first-probe",image:$image,imagePullPolicy:"Never",args:["request","--protocol",$protocol,"--target",$address,"--id",$id,"--duration","15s","--timeout","300ms"],securityContext:{runAsUser:10000,allowPrivilegeEscalation:false,capabilities:{drop:["ALL"]}}}} | if $phase=="felix-init" or $phase=="first-init" then .pod.spec.initContainers=[.probe] else .pod.spec.containers += [.probe] end | .pod' | protected_pod | k create -f - >/dev/null
+fi
 deadline=$((SECONDS+45))
 completed=false
 while ((SECONDS<deadline)); do
@@ -51,6 +56,9 @@ k -n networking-np get pod "$source_pod" -o json | jq '{uid:.metadata.uid,create
 source_ip=$(jq -r .ip "$artifacts/startup.json"); interface=''
 if [[ "$completed" == true ]]; then
   k -n networking-np logs "$source_pod" -c first-probe > "$artifacts/probe.jsonl"
+  if [[ "$client" == integration ]]; then
+    "$BASH" "$root/test/e2e/scripts/integration-observe.sh" --state-dir "$state_dir" --artifacts "$artifacts" --test-id "$test_id" --client "$source_pod"
+  fi
   interface=$(endpoint_interface networking-np "$source_pod")
 else
   # The Go assertion distinguishes a proven CNI policy block from unrelated Pending causes.

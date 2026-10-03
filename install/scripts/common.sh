@@ -4,15 +4,16 @@ umask 077
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # shellcheck source=../versions.env
 source "$root/install/versions.env"
-kubeconfig='' context='' artifacts='' cache_dir="$root/.cache"
+kubeconfig='' context='' artifacts='' cache_dir="$root/.cache" cni_scope=standalone
 while (($#)); do
   case "$1" in
-    --kubeconfig|--context|--artifacts|--cache-dir)
+    --kubeconfig|--context|--artifacts|--cache-dir|--cni-scope)
       (($# >= 2)) || { echo "missing value: $1" >&2; exit 2; }
       key=${1#--}; key=${key//-/_}; printf -v "$key" '%s' "$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
+[[ "$cni_scope" == standalone || "$cni_scope" == foundation ]] || { echo 'unsupported --cni-scope; use standalone or foundation' >&2; exit 2; }
 [[ -n "$kubeconfig" && -n "$context" && -f "$kubeconfig" ]] || { echo 'explicit --kubeconfig FILE and --context NAME required' >&2; exit 2; }
 export NO_PROXY="${NO_PROXY:-},localhost,127.0.0.1,::1"
 export no_proxy="$NO_PROXY"

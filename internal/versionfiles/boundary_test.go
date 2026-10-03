@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"maps"
 	"os"
 	"os/exec"
 	"strings"
@@ -57,6 +58,57 @@ func TestEffectiveBoundaryRejectsMissingDisablementAndWrongNodeAction(t *testing
 			cmd.Stdin = strings.NewReader(input)
 			err := cmd.Run()
 			if (err == nil) != (action == "ACCEPT") {
+				t.Fatalf("accepted=%t: %v", err == nil, err)
+			}
+		})
+	}
+}
+
+func TestCNICompositionChecksOnlySelectedFoundationScope(t *testing.T) {
+	data, err := os.ReadFile("../../install/calico/config-patch.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cm struct{ Data map[string]string }
+	if err := json.Unmarshal(data, &cm); err != nil {
+		t.Fatal(err)
+	}
+	var config map[string]any
+	if err := json.Unmarshal([]byte(strings.ReplaceAll(cm.Data["cni_network_config"], "__CNI_MTU__", "0")), &config); err != nil {
+		t.Fatal(err)
+	}
+	base := config["plugins"].([]any)
+	suffix := map[string]any{"type": "consumer-owned"}
+	withoutSNAT := maps.Clone(base[2].(map[string]any))
+	withoutSNAT["snat"] = false
+	withoutPortMappings := maps.Clone(base[2].(map[string]any))
+	withoutPortMappings["capabilities"] = map[string]any{"portMappings": false}
+	for _, tc := range []struct {
+		name, scope string
+		plugins     []any
+		accepted    bool
+	}{
+		{"standalone", "standalone", base, true},
+		{"unknown scope", "unknown", base, false},
+		{"foundation alone", "foundation", base, true},
+		{"unselected composition", "standalone", append(append([]any{}, base...), suffix), false},
+		{"consumer suffix", "foundation", append(append([]any{}, base...), suffix), true},
+		{"missing tuning", "foundation", []any{base[0], base[2], suffix}, false},
+		{"wrong order", "foundation", []any{base[0], base[2], base[1], suffix}, false},
+		{"standalone without snat", "standalone", []any{base[0], base[1], withoutSNAT}, false},
+		{"composed without snat", "foundation", []any{base[0], base[1], withoutSNAT, suffix}, false},
+		{"standalone without port mappings", "standalone", []any{base[0], base[1], withoutPortMappings}, false},
+		{"composed without port mappings", "foundation", []any{base[0], base[1], withoutPortMappings, suffix}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			config["plugins"] = tc.plugins
+			input, err := json.Marshal(config)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cmd := exec.CommandContext(t.Context(), "jq", "-e", "--arg", "scope", tc.scope, "-f", "../../install/scripts/check-cni.jq")
+			cmd.Stdin = strings.NewReader(string(input))
+			if err := cmd.Run(); (err == nil) != tc.accepted {
 				t.Fatalf("accepted=%t: %v", err == nil, err)
 			}
 		})
